@@ -3,41 +3,31 @@
 namespace App\Services;
 
 use App\Models\User;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\PersonalAccessToken;
 
 class AuthService
 {
-    private User $user;
-
-    public function __construct(User $user)
+    public function __construct(private User $user)
     {
-        $this->user = $user;
     }
 
     public function generateAuthData(): array
     {
-        // Create a new Sanctum token with device info
-        $token = $this->user->createToken(
-            Str::random(20), // token name (device identifier)
-            ['*'], // abilities
-            now()->addYear() // expiration
-        );
-
-        // Format token: remove ID prefix and add Bearer
-        $tokenParts = explode('|', $token->plainTextToken);
-        $formattedToken = 'Bearer ' . ($tokenParts[1] ?? $tokenParts[0]);
-
+        if (!$this->user->is_admin || $this->user->banned) {
+            throw new AuthorizationException('只有管理员可以建立登录会话');
+        }
+        $token = $this->user->createToken('admin-' . Str::random(12), ['admin'], now()->addDays(30));
         return [
-            'token' => $this->user->token,
-            'auth_data' => $formattedToken,
-            'is_admin' => $this->user->is_admin,
+            'auth_data' => 'Bearer ' . $token->plainTextToken,
+            'is_admin' => true,
         ];
     }
 
     public function getSessions(): array
     {
-        return $this->user->tokens()->get()->toArray();
+        return $this->user->tokens()->get(['id', 'name', 'last_used_at', 'expires_at', 'created_at'])->toArray();
     }
 
     public function removeSession(string $sessionId): bool
@@ -54,34 +44,11 @@ class AuthService
 
     public static function findUserByBearerToken(string $bearerToken): ?User
     {
-        $token = str_replace('Bearer ', '', $bearerToken);
-        
-        $accessToken = PersonalAccessToken::findToken($token);
-        
-        $tokenable = $accessToken?->tokenable;
-        
-        return $tokenable instanceof User ? $tokenable : null;
-    }
-
-    /**
-     * 解密认证数据
-     *
-     * @param string $authorization
-     * @return array|null 用户数据或null
-     */
-    public static function decryptAuthData(string $authorization): ?array
-    {
-        $user = self::findUserByBearerToken($authorization);
-        
-        if (!$user) {
+        $accessToken = PersonalAccessToken::findToken(preg_replace('/^Bearer\s+/i', '', $bearerToken));
+        if (!$accessToken || ($accessToken->expires_at && $accessToken->expires_at->isPast())) {
             return null;
         }
-        
-        return [
-            'id' => $user->id,
-            'email' => $user->email,
-            'is_admin' => (bool)$user->is_admin,
-            'is_staff' => (bool)$user->is_staff
-        ];
+        $user = $accessToken->tokenable;
+        return $user instanceof User && $user->is_admin && !$user->banned ? $user : null;
     }
 }

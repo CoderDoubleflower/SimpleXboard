@@ -1,3 +1,11 @@
+FROM node:22-alpine AS panel
+
+WORKDIR /build
+COPY panel/package.json panel/package-lock.json ./panel/
+RUN npm --prefix panel ci
+COPY panel ./panel
+RUN npm --prefix panel run build
+
 FROM phpswoole/swoole:php8.2-alpine AS runtime
 
 RUN php -r 'if (version_compare(PHP_VERSION, "8.2.35", "<")) { \
@@ -22,8 +30,6 @@ RUN apk --no-cache add \
         mysql-client \
         mysql-dev \
         mariadb-connector-c \
-        git \
-        patch \
         supervisor \
         libssl3 \
         libcrypto3 \
@@ -42,29 +48,33 @@ FROM runtime AS app
 
 WORKDIR /www
 
-COPY .docker /
+# Build the reviewed checkout, including the panel generated from panel/src.
+# Composer installs the checked-in lock; no source checkout happens in the image.
+COPY . /www
+COPY --from=panel /build/public/assets/panel /www/public/assets/panel
 
-ARG CACHEBUST=1
-ARG REPO_URL=https://github.com/cedar2025/Xboard
-ARG BRANCH_NAME=master
-
-RUN echo "Attempting to clone branch: ${BRANCH_NAME} from ${REPO_URL} with CACHEBUST: ${CACHEBUST}" && \
-    rm -rf ./* && \
-    rm -rf .git && \
-    git config --global --add safe.directory /www && \
-    git clone --depth 1 --branch ${BRANCH_NAME} ${REPO_URL} . && \
-    git submodule update --init --recursive --force
+ARG APP_VERSION=local
+ARG VCS_REF=unknown
+ENV APP_VERSION=${APP_VERSION}
+LABEL org.opencontainers.image.title="SimpleXboard" \
+      org.opencontainers.image.source="https://github.com/CoderDoubleflower/SimpleXboard" \
+      org.opencontainers.image.revision="${VCS_REF}"
 
 COPY .docker/supervisor/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY .docker/caddy/Caddyfile /etc/caddy/Caddyfile
 COPY .docker/php/zz-xboard.ini /usr/local/etc/php/conf.d/zz-xboard.ini
 
-RUN composer install --no-cache --no-dev --no-security-blocking \
-    && php artisan storage:link \
-    && chown -R www:www /www \
-    && chmod -R 775 /www \
-    && mkdir -p /data \
-    && chown redis:redis /data
+RUN test -f composer.lock && \
+    test -f panel/package-lock.json && \
+    test -f public/assets/panel/manifest.json && \
+    mkdir -p storage/app/public storage/backup storage/framework/cache/data storage/framework/sessions \
+        storage/framework/views storage/logs/supervisor bootstrap/cache .docker/.data /data && \
+    composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader && \
+    php artisan storage:link && \
+    chown -R www:www /www && \
+    chmod -R u=rwX,g=rX,o=rX /www && \
+    chmod -R ug=rwX storage bootstrap/cache .docker/.data && \
+    chown redis:redis /data
 
 ENV ENABLE_WEB=true \
     ENABLE_HORIZON=true \

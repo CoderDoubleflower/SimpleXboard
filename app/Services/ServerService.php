@@ -6,7 +6,6 @@ use App\Models\Server;
 use App\Models\ServerMachine;
 use App\Models\ServerRoute;
 use App\Models\User;
-use App\Services\Plugin\HookManager;
 use App\Utils\CacheKey;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\Cache;
@@ -54,13 +53,9 @@ class ServerService
      */
     public static function getAvailableServers(User $user): array
     {
-        $servers = Server::whereJsonContains('group_ids', (string) $user->group_id)
+        if (!$user->isAvailable()) return [];
+        $servers = Server::available()->accessibleTo($user)
             ->where('show', true)
-            ->where(function ($query) {
-                $query->whereNull('transfer_enable')
-                    ->orWhere('transfer_enable', 0)
-                    ->orWhereRaw('u + d < transfer_enable');
-            })
             ->orderBy('sort', 'ASC')
             ->get()
             ->append(['last_check_at', 'last_push_at', 'online', 'is_online', 'available_status', 'cache_key', 'server_key']);
@@ -75,40 +70,18 @@ class ServerService
                 $server->port = (int) $server->port;
             }
             $server->password = $server->generateServerPassword($user);
-            $server->rate = $server->getCurrentRate();
             return $server;
         })->toArray();
 
         return $servers;
     }
 
-    /**
-     * 根据权限组获取可用的用户列表
-     * @param array $groupIds
-     * @return Collection
-     */
-    public static function getAvailableUsers(Server $node)
+    /** Full pulls and deltas share the same member and node authorization rules. */
+    public static function getAvailableUsers(Server $node): Collection
     {
-        $groupIds = $node->group_ids ?? [];
-        if (empty($groupIds)) {
-            return collect();
-        }
-        $users = User::toBase()
-            ->whereIn('group_id', $groupIds)
-            ->whereRaw('u + d < transfer_enable')
-            ->where(function ($query) {
-                $query->where('expired_at', '>=', time())
-                    ->orWhere('expired_at', NULL);
-            })
-            ->where('banned', 0)
-            ->select([
-                'id',
-                'uuid',
-                'speed_limit',
-                'device_limit'
-            ])
-            ->get();
-        return HookManager::filter('server.users.get', $users, $node);
+        if (!$node->isAvailable()) return collect();
+        return User::eligible()->authorizedFor($node)
+            ->select(['id', 'uuid', 'speed_limit', 'device_limit'])->toBase()->get();
     }
 
     // 获取路由规则
@@ -124,8 +97,9 @@ class ServerService
     public static function processTraffic(Server $node, array $traffic): void
     {
         $data = array_filter($traffic, fn($item) =>
-            is_array($item) && count($item) === 2
-            && is_numeric($item[0]) && is_numeric($item[1])
+            is_array($item) && array_is_list($item) && count($item) === 2
+            && filter_var($item[0], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) !== false
+            && filter_var($item[1], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) !== false
         );
 
         if (empty($data)) {

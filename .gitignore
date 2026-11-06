@@ -33,3 +33,6 @@ compose.yaml
 compose.host.yaml
 compose.split.yaml
 .scribe
+/storage/framework/testing/
+__pycache__/
+*.pyc

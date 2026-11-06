@@ -34,7 +34,7 @@ class StatisticalService
     {
         $this->startAt = $timestamp;
         $this->statServerKey = "stat_server_{$this->startAt}";
-        $this->statUserKey = "stat_user_{$this->startAt}";
+        $this->statUserKey = "stat_user_actual_{$this->startAt}";
     }
 
     public function setEndAt($timestamp)
@@ -51,16 +51,7 @@ class StatisticalService
         $endAt = $this->endAt ?? Carbon::tomorrow()->timestamp;
 
         return [
-            // Legacy NOT NULL columns remain until the reviewed retirement migration.
-            // They are never calculated from commercial data.
-            'order_count' => 0,
-            'order_total' => 0,
-            'paid_count' => 0,
-            'paid_total' => 0,
-            'commission_count' => 0,
-            'commission_total' => 0,
-            'invite_count' => 0,
-            'register_count' => User::where('created_at', '>=', $startAt)
+            'register_count' => User::where('is_admin', false)->where('created_at', '>=', $startAt)
                 ->where('created_at', '<', $endAt)
                 ->count(),
             'transfer_used_total' => StatServer::where('record_at', '>=', $startAt)
@@ -85,12 +76,10 @@ class StatisticalService
     /**
      * 追加用户使用流量
      */
-    public function statUser($rate, $userId, $u, $d)
+    public function statUser($userId, $u, $d)
     {
-        $u_menber = "{$rate}_{$userId}_u"; //储存上传流量的集合成员
-        $d_menber = "{$rate}_{$userId}_d"; //储存下载流量的集合成员
-        $this->redis()->zincrby($this->statUserKey, $u, $u_menber);
-        $this->redis()->zincrby($this->statUserKey, $d, $d_menber);
+        $this->redis()->zincrby($this->statUserKey, $u, "{$userId}_u");
+        $this->redis()->zincrby($this->statUserKey, $d, "{$userId}_d");
     }
 
     /**
@@ -98,44 +87,22 @@ class StatisticalService
      */
     public function getStatUserByUserID(int|string $userId): array
     {
-
-        $stats = [];
-        $statsUser = $this->redis()->zrange($this->statUserKey, 0, -1, true);
-        foreach ($statsUser as $member => $value) {
-            list($rate, $uid, $type) = explode('_', $member);
-            if (intval($uid) !== intval($userId))
-                continue;
-            $key = "{$rate}_{$uid}";
-            $stats[$key] = $stats[$key] ?? [
-                'record_at' => $this->startAt,
-                'server_rate' => number_format((float) $rate, 2, '.', ''),
-                'u' => 0,
-                'd' => 0,
-                'user_id' => intval($userId),
-            ];
-            $stats[$key][$type] += $value;
-        }
-        return array_values($stats);
+        return array_values(array_filter($this->getStatUser(), fn ($row) => $row['user_id'] === (int) $userId));
     }
 
     /**
      * 获取缓存中的用户报表
      */
-    public function getStatUser()
+    public function getStatUser(): array
     {
         $stats = [];
-        $statsUser = $this->redis()->zrange($this->statUserKey, 0, -1, true);
-        foreach ($statsUser as $member => $value) {
-            list($rate, $uid, $type) = explode('_', $member);
-            $key = "{$rate}_{$uid}";
-            $stats[$key] = $stats[$key] ?? [
-                'record_at' => $this->startAt,
-                'server_rate' => $rate,
-                'u' => 0,
-                'd' => 0,
-                'user_id' => intval($uid),
-            ];
-            $stats[$key][$type] += $value;
+        foreach ($this->redis()->zrange($this->statUserKey, 0, -1, true) as $member => $value) {
+            if (!preg_match('/^(\d+)_(u|d)$/', $member, $match)) {
+                continue;
+            }
+            $id = (int) $match[1];
+            $stats[$id] ??= ['record_at' => $this->startAt, 'u' => 0, 'd' => 0, 'user_id' => $id];
+            $stats[$id][$match[2]] += (int) $value;
         }
         return array_values($stats);
     }

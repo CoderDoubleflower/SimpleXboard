@@ -35,73 +35,37 @@ class NodeSyncService
     }
 
     /**
-     * Push all users to all nodes in the group
+     * Visit every node so old grants, hidden nodes and removed pivots cannot retain
+     * credentials. The small private member set needs no group-based fan-out.
      */
-    public static function notifyUsersUpdatedByGroup(int $groupId): void
+    public static function notifyUserChanged(User $user, bool $revokeExisting = false): void
     {
-        $servers = Server::whereJsonContains('group_ids', (string) $groupId)
-            ->get();
-
-        foreach ($servers as $server) {
-            if (!self::isNodeOnline($server->id))
-                continue;
-
-            $users = ServerService::getAvailableUsers($server)->toArray();
-            self::push($server->id, 'sync.users', ['users' => $users]);
-        }
-    }
-
-    /**
-     * Push user changes (add/remove) to affected nodes
-     */
-    public static function notifyUserChanged(User $user): void
-    {
-        if (!$user->group_id)
-            return;
-
-        $servers = Server::whereJsonContains('group_ids', (string) $user->group_id)->get();
-        foreach ($servers as $server) {
-            if (!self::isNodeOnline($server->id))
-                continue;
-
-            if ($user->isAvailable()) {
+        foreach (Server::all() as $server) {
+            if (!self::isNodeOnline($server->id)) continue;
+            $allowed = $user->isAvailable() && $server->isAvailable() && $user->canAccessServer($server);
+            if (!$allowed || $revokeExisting) self::removeUserFromNode($server->id, $user->id);
+            if ($allowed) {
                 self::push($server->id, 'sync.user.delta', [
                     'action' => 'add',
-                    'users' => [
-                        [
-                            'id' => $user->id,
-                            'uuid' => $user->uuid,
-                            'speed_limit' => $user->speed_limit,
-                            'device_limit' => $user->device_limit,
-                        ]
-                    ],
-                ]);
-            } else {
-                self::push($server->id, 'sync.user.delta', [
-                    'action' => 'remove',
-                    'users' => [['id' => $user->id]],
+                    'users' => [[
+                        'id' => $user->id, 'uuid' => $user->uuid,
+                        'speed_limit' => $user->speed_limit, 'device_limit' => $user->device_limit,
+                    ]],
                 ]);
             }
         }
     }
 
-    /**
-     * Push user removal from a specific group's nodes
-     */
-    public static function notifyUserRemovedFromGroup(int $userId, int $groupId): void
+    public static function notifyUserRemoved(int $userId): void
     {
-        $servers = Server::whereJsonContains('group_ids', (string) $groupId)
-            ->get();
-
-        foreach ($servers as $server) {
-            if (!self::isNodeOnline($server->id))
-                continue;
-
-            self::push($server->id, 'sync.user.delta', [
-                'action' => 'remove',
-                'users' => [['id' => $userId]],
-            ]);
+        foreach (Server::pluck('id') as $nodeId) {
+            if (self::isNodeOnline($nodeId)) self::removeUserFromNode($nodeId, $userId);
         }
+    }
+
+    private static function removeUserFromNode(int $nodeId, int $userId): void
+    {
+        self::push($nodeId, 'sync.user.delta', ['action' => 'remove', 'users' => [['id' => $userId]]]);
     }
 
     /**

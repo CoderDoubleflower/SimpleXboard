@@ -150,7 +150,7 @@ class TrafficResetController extends Controller
       'reason' => 'nullable|string|max:255',
     ]);
 
-    $user = User::find($request->user_id);
+    $user = User::where('is_admin', false)->findOrFail($request->user_id);
 
             if (!$this->trafficResetService->canReset($user)) {
             return response()->json([
@@ -178,7 +178,6 @@ class TrafficResetController extends Controller
         'user_id' => $user->id,
         'email' => $user->email,
         'reset_time' => now(),
-        'next_reset_at' => $user->fresh()->next_reset_at,
       ]
     ]);
   }
@@ -225,7 +224,6 @@ class TrafficResetController extends Controller
           'email' => $user->email,
           'reset_count' => $user->reset_count,
           'last_reset_at' => $user->last_reset_at,
-          'next_reset_at' => $user->next_reset_at,
         ],
         'history' => $data,
       ]

@@ -2,29 +2,23 @@
 
 namespace App\Http\Middleware;
 
-use App\Exceptions\ApiException;
-use Illuminate\Support\Facades\Auth;
-use Closure;
 use App\Models\User;
+use Closure;
+use Illuminate\Support\Facades\Auth;
 
 class Admin
 {
-    /**
-     * Handle an incoming request.
-     *
-     * @param \Illuminate\Http\Request $request
-     * @param \Closure $next
-     * @return mixed
-     */
     public function handle($request, Closure $next)
     {
-        /** @var User|null $user */
-        $user = Auth::guard('sanctum')->user();
-        
-        if (!$user || !$user->is_admin) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+        $path = admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key'))));
+        if ($request->route('admin_path') !== null) {
+            abort_unless(hash_equals((string) $path, (string) $request->route('admin_path')), 404);
+            $request->route()->forgetParameter('admin_path');
         }
-        
+        $user = Auth::guard('sanctum')->user();
+        if (!$user instanceof User || !$user->is_admin || $user->banned) {
+            return response()->json(['message' => '管理员登录已失效'], 403);
+        }
         return $next($request);
     }
 }

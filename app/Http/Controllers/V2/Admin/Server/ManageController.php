@@ -6,7 +6,6 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ServerSave;
 use App\Models\Server;
-use App\Models\ServerGroup;
 use App\Services\ServerService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,7 +16,6 @@ class ManageController extends Controller
     public function getNodes(Request $request)
     {
         $servers = ServerService::getAllServers()->map(function ($item) {
-            $item['groups'] = ServerGroup::whereIn('id', $item['group_ids'] ?? [])->get(['name', 'id']);
             $item['parent'] = $item->parent;
             return $item;
         });
@@ -79,9 +77,9 @@ class ManageController extends Controller
     {
         $params = $request->validate([
             'id' => 'required|integer',
-            'show' => 'nullable|integer',
-            'machine_id' => 'nullable|integer',
-            'enabled' => 'nullable|boolean',
+            'show' => 'sometimes|boolean',
+            'machine_id' => 'nullable|integer|exists:v2_server_machine,id',
+            'enabled' => 'sometimes|boolean',
         ]);
 
         $server = Server::find($request->id);
@@ -145,7 +143,7 @@ class ManageController extends Controller
         }
 
         try {
-            $deleted = Server::whereIn('id', $ids)->delete();
+            $deleted = DB::transaction(fn () => Server::whereIn('id', $ids)->get()->each->delete());
             if ($deleted === false) {
                 return $this->fail([500, '批量删除失败']);
             }
@@ -203,10 +201,7 @@ class ManageController extends Controller
         }
 
         try {
-            Server::whereIn('id', $ids)->update([
-                'u' => 0,
-                'd' => 0,
-            ]);
+            DB::transaction(fn () => Server::whereIn('id', $ids)->get()->each->update(['u' => 0, 'd' => 0]));
             
             Log::info("Servers " . implode(',', $ids) . " traffic reset by admin");
             return $this->success(true);
@@ -224,9 +219,9 @@ class ManageController extends Controller
         $params = $request->validate([
             'ids' => 'required|array',
             'ids.*' => 'integer',
-            'show' => 'nullable|integer|in:0,1',
-            'enabled' => 'nullable|boolean',
-            'machine_id' => 'nullable|integer',
+            'show' => 'sometimes|boolean',
+            'enabled' => 'sometimes|boolean',
+            'machine_id' => 'nullable|integer|exists:v2_server_machine,id',
         ]);
 
         $ids = $params['ids'];
@@ -277,7 +272,8 @@ class ManageController extends Controller
         }
 
         $copiedServer = $server->replicate();
-        $copiedServer->show = 0;
+        $copiedServer->show = false;
+        $copiedServer->enabled = false;
         $copiedServer->code = null;
         $copiedServer->u = 0;
         $copiedServer->d = 0;

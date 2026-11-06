@@ -16,7 +16,6 @@
         <env name="CACHE_DRIVER" value="array" force="true"/>
         <env name="QUEUE_CONNECTION" value="sync" force="true"/>
         <env name="SESSION_DRIVER" value="array" force="true"/>
-        <env name="MAIL_MAILER" value="array" force="true"/>
         <env name="LOG_CHANNEL" value="null" force="true"/>
     </php>
 </phpunit>

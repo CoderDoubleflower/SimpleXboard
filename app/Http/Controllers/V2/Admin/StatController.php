@@ -18,28 +18,7 @@ class StatController extends Controller
     {
     }
 
-    public function getOverride(Request $request)
-    {
-        $stats = $this->getOperationalStats();
 
-        return ['data' => [
-            // The bundled dashboard still reads these keys during the first round.
-            'month_income' => 0,
-            'ticket_pending_total' => 0,
-            'commission_pending_total' => 0,
-            'day_income' => 0,
-            'last_month_income' => 0,
-            'commission_month_payout' => 0,
-            'commission_last_month_payout' => 0,
-            'month_register_total' => $stats['currentMonthNewUsers'],
-            'online_nodes' => $stats['onlineNodes'],
-            'online_devices' => $stats['onlineDevices'],
-            'online_users' => $stats['onlineUsers'],
-            'today_traffic' => $stats['todayTraffic'],
-            'month_traffic' => $stats['monthTraffic'],
-            'total_traffic' => $stats['totalTraffic'],
-        ]];
-    }
 
     public function getServerLastRank()
     {
@@ -103,20 +82,7 @@ class StatController extends Controller
 
     public function getStats()
     {
-        return ['data' => $this->getOperationalStats() + [
-            // Read-only compatibility for the existing bundled dashboard.
-            'todayIncome' => 0,
-            'dayIncomeGrowth' => 0,
-            'currentMonthIncome' => 0,
-            'lastMonthIncome' => 0,
-            'monthIncomeGrowth' => 0,
-            'lastMonthIncomeGrowth' => 0,
-            'currentMonthCommissionPayout' => 0,
-            'lastMonthCommissionPayout' => 0,
-            'commissionGrowth' => 0,
-            'commissionPendingTotal' => 0,
-            'ticketPendingTotal' => 0,
-        ]];
+        return $this->success($this->getOperationalStats());
     }
 
     private function getOperationalStats(): array
@@ -124,28 +90,28 @@ class StatController extends Controller
         $now = Carbon::now()->timestamp;
         $currentMonthStart = Carbon::now()->startOfMonth()->timestamp;
         $lastMonthStart = Carbon::now()->startOfMonth()->subMonth()->timestamp;
-        $currentMonthNewUsers = User::where('created_at', '>=', $currentMonthStart)
+        $currentMonthNewUsers = User::where('is_admin', false)->where('created_at', '>=', $currentMonthStart)
             ->where('created_at', '<=', $now)->count();
-        $lastMonthNewUsers = User::where('created_at', '>=', $lastMonthStart)
+        $lastMonthNewUsers = User::where('is_admin', false)->where('created_at', '>=', $lastMonthStart)
             ->where('created_at', '<', $currentMonthStart)->count();
-        $onlineMembers = User::where('t', '>=', $now - 600);
+        $onlineMembers = User::eligible()->where('t', '>=', $now - 600);
 
         return [
             'currentMonthNewUsers' => $currentMonthNewUsers,
-            'totalUsers' => User::count(),
-            'activeUsers' => User::where('banned', false)
-                ->whereNotNull('plan_id')
-                ->where(fn ($query) => $query->whereNull('expired_at')->orWhere('expired_at', '>', $now))
-                ->count(),
+            'totalUsers' => User::where('is_admin', false)->count(),
+            'activeUsers' => User::eligible()->count(),
+            'totalNodes' => Server::count(),
+            'enabledNodes' => Server::where('enabled', true)->count(),
             'userGrowth' => $lastMonthNewUsers > 0
                 ? round(($currentMonthNewUsers - $lastMonthNewUsers) / $lastMonthNewUsers * 100, 1)
                 : 0,
             'onlineUsers' => (clone $onlineMembers)->count(),
             'onlineDevices' => (clone $onlineMembers)->sum('online_count'),
-            'onlineNodes' => Server::all()->filter(fn ($server) => (bool) $server->is_online)->count(),
+            'onlineNodes' => Server::where('enabled', true)->get()->filter(fn ($server) => (bool) $server->is_online)->count(),
             'todayTraffic' => $this->getTrafficTotals(Carbon::today()->timestamp, Carbon::tomorrow()->timestamp),
             'monthTraffic' => $this->getTrafficTotals($currentMonthStart, Carbon::tomorrow()->timestamp),
             'totalTraffic' => $this->getTrafficTotals(),
+            'trafficAccounting' => ['basis' => 'actual_bytes', 'changed_at' => admin_setting('traffic_accounting_changed_at'), 'legacy_note' => '节点统计为实际字节；旧成员额度累计可能包含迁移前折算量。'],
         ];
     }
 

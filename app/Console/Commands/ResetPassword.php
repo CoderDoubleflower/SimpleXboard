@@ -2,54 +2,36 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Plan;
-use App\Utils\Helper;
-use Illuminate\Console\Command;
 use App\Models\User;
+use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 
 class ResetPassword extends Command
 {
-    protected $builder;
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'reset:password {email} {password?}';
+    protected $description = '重置管理员密码并撤销所有登录会话';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
-    protected $description = '重置用户密码';
-
-    /**
-     * Create a new command instance.
-     *
-     * @return void
-     */
-    public function __construct()
+    public function handle(): int
     {
-        parent::__construct();
-    }
-
-    /**
-     * Execute the console command.
-     *
-     * @return mixed
-     */
-    public function handle()
-    {
-        $password = $this->argument('password') ;
-        $user = User::byEmail($this->argument('email'))->first();
-        if (!$user) abort(500, '邮箱不存在');
-        $password = $password ?? Helper::guid(false);
-        $user->password = password_hash($password, PASSWORD_DEFAULT);
-        $user->password_algo = null;
-        if (!$user->save()) abort(500, '重置失败');
-        $this->info("!!!重置成功!!!");
-        $this->info("新密码为：{$password}，请尽快修改密码。");
+        $user = User::byEmail($this->argument('email'))->where('is_admin', true)->first();
+        if (!$user) {
+            $this->error('管理员不存在');
+            return self::FAILURE;
+        }
+        $password = $this->argument('password') ?? $this->secret('新密码（至少12位）');
+        if (!is_string($password) || strlen($password) < 12) {
+            $this->error('新密码至少12位');
+            return self::FAILURE;
+        }
+        DB::transaction(function () use ($user, $password) {
+            $user->password = Hash::make($password);
+            $user->password_algo = null;
+            $user->password_salt = null;
+            $user->save();
+            $user->tokens()->delete();
+        });
+        $this->info('管理员密码已更新，原登录会话已撤销。');
+        return self::SUCCESS;
     }
 }

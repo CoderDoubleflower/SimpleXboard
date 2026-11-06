@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Services\Plugin\PluginManager;
 use Illuminate\Console\Command;
 use Illuminate\Encryption\Encrypter;
 use App\Models\User;
@@ -31,7 +30,7 @@ class XboardInstall extends Command
      *
      * @var string
      */
-    protected $description = 'xboard 初始化安装';
+    protected $description = 'SimpleXboard 初始化安装';
 
     /**
      * Create a new command instance.
@@ -55,17 +54,13 @@ class XboardInstall extends Command
             $enableSqlite = getenv('ENABLE_SQLITE', false);
             $enableRedis = getenv('ENABLE_REDIS', false);
             $adminAccount = getenv('ADMIN_ACCOUNT', false);
-            $this->info("__    __ ____                      _  ");
-            $this->info("\ \  / /| __ )  ___   __ _ _ __ __| | ");
-            $this->info(" \ \/ / | __ \ / _ \ / _` | '__/ _` | ");
-            $this->info(" / /\ \ | |_) | (_) | (_| | | | (_| | ");
-            $this->info("/_/  \_\|____/ \___/ \__,_|_|  \__,_| ");
+            $this->info('SimpleXboard 安装');
             if (
                 (File::exists(base_path() . '/.env') && $this->getEnvValue('INSTALLED'))
                 || (getenv('INSTALLED', false) && $isDocker)
             ) {
                 $securePath = admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key'))));
-                $this->info("访问 http(s)://你的站点/{$securePath} 进入管理面板，你可以在用户中心修改你的密码。");
+                $this->info("访问 http(s)://你的站点/{$securePath} 进入管理面板，你可以在设置中修改管理员密码。");
                 $this->warn("如需重新安装请清空目录下 .env 文件的内容（Docker安装方式不可以删除此文件）");
                 $this->warn("快捷清空.env命令：");
                 note('rm .env && touch .env');
@@ -174,16 +169,13 @@ class XboardInstall extends Command
             if (!self::registerAdmin($email, $password)) {
                 abort(500, '管理员账号注册失败，请重试');
             }
-            $this->info('正在安装默认插件...');
-            PluginManager::installDefaultPlugins();
-            $this->info('默认插件安装完成');
 
             $this->info('🎉：一切就绪');
             $this->info("管理员邮箱：{$email}");
             $this->info("管理员密码：{$password}");
 
             $defaultSecurePath = hash('crc32b', config('app.key'));
-            $this->info("访问 http(s)://你的站点/{$defaultSecurePath} 进入管理面板，你可以在用户中心修改你的密码。");
+            $this->info("访问 http(s)://你的站点/{$defaultSecurePath} 进入管理面板，你可以在设置中修改管理员密码。");
             $envConfig['INSTALLED'] = true;
             $this->saveToEnv($envConfig);
             foreach (array_keys($installDriverOverrides) as $key) {

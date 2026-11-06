@@ -19,6 +19,10 @@ class Client
      */
     public function handle($request, Closure $next)
     {
+        if ($request->route('subscription_path') !== null) {
+            abort_unless(hash_equals((string) admin_setting('subscribe_path', 's'), (string) $request->route('subscription_path')), 404);
+            $request->route()->forgetParameter('subscription_path');
+        }
         $routeToken = $request->route('token');
         $token = $routeToken !== null ? $routeToken : $request->query('token');
 

@@ -7,7 +7,6 @@ use Closure;
 
 class RequestLog
 {
-    private const SENSITIVE_KEYS = ['password', 'token', 'secret', 'key', 'api_key'];
 
     public function handle($request, Closure $next)
     {
@@ -24,13 +23,13 @@ class RequestLog
             }
 
             $action = $this->resolveAction($request->path());
-            $data = collect($request->all())->except(self::SENSITIVE_KEYS)->toArray();
+            $data = $this->redact($request->all());
 
             AdminAuditLog::insert([
                 'admin_id' => $admin->id,
                 'action' => $action,
                 'method' => $request->method(),
-                'uri' => $request->getRequestUri(),
+                'uri' => '/' . $request->path(),
                 'request_data' => json_encode($data, JSON_UNESCAPED_UNICODE),
                 'ip' => $request->getClientIp(),
                 'created_at' => time(),
@@ -41,6 +40,18 @@ class RequestLog
         }
 
         return $response;
+    }
+
+    private function redact(array $data): array
+    {
+        foreach ($data as $key => $value) {
+            if (preg_match('/password|passwd|token|secret|key|authorization|auth_data/i', (string) $key)) {
+                $data[$key] = '[redacted]';
+            } elseif (is_array($value)) {
+                $data[$key] = $this->redact($value);
+            }
+        }
+        return $data;
     }
 
     private function resolveAction(string $path): string

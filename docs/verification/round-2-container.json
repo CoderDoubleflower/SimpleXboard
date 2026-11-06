@@ -1,0 +1,51 @@
+{
+  "status": "passed",
+  "scope": "Built image default entrypoint, Caddy/Octane/Horizon/Redis/Workerman, isolated SQLite and real container restart",
+  "checks": [
+    {
+      "check": "Default container starts embedded Redis, Horizon and Caddy/Octane with a migrated database",
+      "elapsed_seconds": 7.16
+    },
+    {
+      "check": "Administrator logs in through the published Caddy port",
+      "elapsed_seconds": 7.25
+    },
+    {
+      "check": "Administrator HTML and built JavaScript/CSS load with matching integrity hashes",
+      "elapsed_seconds": 7.27
+    },
+    {
+      "check": "New member receives VLESS and Hysteria2 subscription credentials",
+      "elapsed_seconds": 7.3
+    },
+    {
+      "check": "HTTP backup creation and download succeed as www with gzip and native SQLite headers",
+      "elapsed_seconds": 7.33
+    },
+    {
+      "check": "Caddy forwards real WebSocket Upgrade and authenticated node full sync",
+      "elapsed_seconds": 7.35
+    },
+    {
+      "check": "Disabling a member revokes both connected nodes through Horizon and rejects the subscription",
+      "elapsed_seconds": 8.39
+    },
+    {
+      "check": "Container restart preserves administrator login, panel assets, member token/UUID and disabled state",
+      "elapsed_seconds": 12.65
+    },
+    {
+      "check": "Node HTTP and WebSocket full sync do not resurrect the disabled member after restart",
+      "elapsed_seconds": 12.68
+    },
+    {
+      "check": "Member restoration after restart reaches both nodes and restores the same subscription",
+      "elapsed_seconds": 15.05
+    },
+    {
+      "check": "HTTP SQLite backup remains writable and downloadable after container restart",
+      "elapsed_seconds": 15.1
+    }
+  ],
+  "image_id": "sha256:eb6b8b93fd9dcd8584c6a67659111acc41b1212597f297248d09170aba667dcd"
+}

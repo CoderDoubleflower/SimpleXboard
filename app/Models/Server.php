@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Cache;
@@ -20,16 +22,12 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
  * @property string $host 主机地址
  * @property string|int $port 端口
  * @property int|null $server_port 服务器端口
- * @property array|null $group_ids 分组IDs
  * @property array|null $route_ids 路由IDs
  * @property array|null $tags 标签
  * @property boolean $show 是否显示
  * @property string|null $allow_insecure 是否允许不安全
  * @property string|null $network 网络类型
  * @property int|null $parent_id 父节点ID
- * @property float|null $rate 倍率
- * @property boolean $rate_time_enable 是否启用时间范围功能
- * @property array|null $rate_time_ranges 倍率时间范围
  * @property int|null $sort 排序
  * @property array|null $protocol_settings 协议设置
  * @property int $created_at
@@ -113,8 +111,8 @@ class Server extends Model
     protected $table = 'v2_server';
 
     protected $guarded = ['id'];
+    protected $attributes = ['show' => true, 'enabled' => true];
     protected $casts = [
-        'group_ids' => 'array',
         'route_ids' => 'array',
         'tags' => 'array',
         'protocol_settings' => 'array',
@@ -127,8 +125,6 @@ class Server extends Model
         'enabled' => 'boolean',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
-        'rate_time_ranges' => 'array',
-        'rate_time_enable' => 'boolean',
         'transfer_enable' => 'integer',
         'u' => 'integer',
         'd' => 'integer',
@@ -427,9 +423,29 @@ class Server extends Model
         return $this->belongsTo(ServerMachine::class, 'machine_id');
     }
 
-    public function groups()
+    public function members(): BelongsToMany
     {
-        return ServerGroup::whereIn('id', $this->group_ids ?? [])->get();
+        return $this->belongsToMany(User::class, 'v2_user_server', 'server_id', 'user_id');
+    }
+
+    public function scopeAvailable(Builder $query): Builder
+    {
+        return $query->where('enabled', true)->where(fn (Builder $q) => $q
+            ->whereNull('transfer_enable')->orWhere('transfer_enable', 0)
+            ->orWhereRaw('COALESCE(u, 0) + COALESCE(d, 0) < transfer_enable'));
+    }
+
+    public function scopeAccessibleTo(Builder $query, User $user): Builder
+    {
+        if ($user->access_mode === 'all') return $query;
+        if ($user->access_mode !== 'restricted') return $query->whereRaw('1 = 0');
+        return $query->whereHas('members', fn (Builder $members) => $members->whereKey($user->id));
+    }
+
+    public function isAvailable(): bool
+    {
+        return $this->enabled && ($this->transfer_enable === null || $this->transfer_enable === 0
+            || (int) $this->u + (int) $this->d < $this->transfer_enable);
     }
 
     public function routes()
@@ -558,17 +574,4 @@ class Server extends Model
         );
     }
 
-    public function getCurrentRate(): float
-    {
-        if (!$this->rate_time_enable) {
-            return (float) $this->rate;
-        }
-
-        $now = now()->format('H:i');
-        $ranges = $this->rate_time_ranges ?? [];
-        $matchedRange = collect($ranges)
-            ->first(fn($range) => $now >= $range['start'] && $now <= $range['end']);
-        
-        return $matchedRange ? (float) $matchedRange['rate'] : (float) $this->rate;
-    }
 }

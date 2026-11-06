@@ -4,84 +4,66 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Laravel\Sanctum\HasApiTokens;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
- * App\Models\User
- *
- * @property int $id 用户ID
- * @property string $email 邮箱
- * @property string $password 密码
- * @property string|null $password_algo 加密方式
- * @property string|null $password_salt 加密盐
- * @property string $token 订阅令牌
- * @property string $uuid
- * @property int|null $plan_id 订阅ID
- * @property int|null $group_id 权限组ID
- * @property int|null $transfer_enable 流量(bytes)
- * @property int|null $speed_limit 限速Mbps
- * @property int|null $u 上行流量
- * @property int|null $d 下行流量
- * @property int|null $banned 是否封禁
- * @property int|null $expired_at 过期时间
- * @property int|null $device_limit 设备限制数量
- * @property int|null $last_login_at 最后登录时间
- * @property int|null $parent_id 父账户ID
- * @property int|null $is_admin 是否管理员
- * @property int|null $next_reset_at 下次流量重置时间
- * @property int|null $last_reset_at 上次流量重置时间
- * @property int|null $telegram_id Telegram ID
- * @property int $reset_count 流量重置次数
- * @property int $created_at
- * @property int $updated_at
- *
- * @property-read \App\Models\Plan|null $plan 用户订阅计划
- * @property-read ServerGroup|null $group 权限组
- * @property-read \Illuminate\Database\Eloquent\Collection<int, StatUser> $stat 统计信息
- * @property-read \Illuminate\Database\Eloquent\Collection<int, TrafficResetLog> $trafficResetLogs 流量重置记录
- * @property-read User|null $parent 父账户
- * @property-read string $subscribe_url 订阅链接（动态生成）
+ * Member identity and hard usage limit. Only administrators have login passwords.
+ * transfer_enable: null = unlimited, 0 = unavailable, positive = bytes allowed.
+ * u/d retain legacy quota accounting; legacy_u/d identify its pre-upgrade portion.
  */
 class User extends Authenticatable
 {
     use HasApiTokens;
+
     protected $table = 'v2_user';
     protected $dateFormat = 'U';
-    protected $guarded = ['id', 'invite_user_id', 'balance', 'commission_balance', 'commission_rate', 'commission_type', 'commission_auto_check', 'discount', 'remind_expire', 'remind_traffic'];
+    protected $guarded = ['id'];
+    protected $attributes = [
+        'access_mode' => 'all',
+        'transfer_enable' => null,
+        'expired_at' => null,
+        'u' => 0,
+        'd' => 0,
+        'legacy_u' => 0,
+        'legacy_d' => 0,
+        'banned' => false,
+        'is_admin' => false,
+    ];
     protected $casts = [
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
         'banned' => 'boolean',
         'is_admin' => 'boolean',
-        'is_staff' => 'boolean',
-        'next_reset_at' => 'timestamp',
+        'expired_at' => 'integer',
+        'transfer_enable' => 'integer',
+        'u' => 'integer',
+        'd' => 'integer',
+        'legacy_u' => 'integer',
+        'legacy_d' => 'integer',
+        'speed_limit' => 'integer',
+        'device_limit' => 'integer',
         'last_reset_at' => 'timestamp',
     ];
-    protected $hidden = ['password', 'invite_user_id', 'balance', 'commission_balance', 'commission_rate', 'commission_type', 'commission_auto_check', 'discount', 'remind_expire', 'remind_traffic'];
+    protected $hidden = ['password', 'password_algo', 'password_salt'];
 
     protected function email(): Attribute
     {
         return Attribute::make(
-            set: fn (string $value) => self::normalizeEmail($value),
+            set: fn (?string $value) => $value === null || trim($value) === '' ? null : self::normalizeEmail($value),
         );
     }
 
-    /**
-     * Normalize an email consistently for storage, lookup and cache keys.
-     */
     public static function normalizeEmail(string $email): string
     {
         $email = trim($email);
         $email = \Normalizer::normalize($email, \Normalizer::FORM_C) ?: $email;
-
         $at = strrpos($email, '@');
         if ($at === false) {
             return mb_strtolower($email, 'UTF-8');
         }
-
         $local = mb_strtolower(substr($email, 0, $at), 'UTF-8');
         $local = \Normalizer::normalize($local, \Normalizer::FORM_C) ?: $local;
         $domain = substr($email, $at + 1);
@@ -90,32 +72,35 @@ class User extends Authenticatable
             IDNA_USE_STD3_RULES | IDNA_CHECK_BIDI | IDNA_CHECK_CONTEXTJ | IDNA_NONTRANSITIONAL_TO_ASCII,
             INTL_IDNA_VARIANT_UTS46
         );
-
-        return $local . '@' . ($asciiDomain === false
-            ? mb_strtolower($domain, 'UTF-8')
-            : strtolower($asciiDomain));
+        return $local . '@' . ($asciiDomain === false ? mb_strtolower($domain, 'UTF-8') : strtolower($asciiDomain));
     }
 
-    /**
-     * Query by the canonical email identity.
-     */
     public function scopeByEmail(Builder $query, string $email): Builder
     {
         return $query->where('email', self::normalizeEmail($email));
     }
 
-    /**
-     * 获取用户订阅计划
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
-     */
-    public function plan(): BelongsTo
+    /** The same eligibility predicate is used by subscriptions and every node sync. */
+    public function scopeEligible(Builder $query, ?int $at = null): Builder
     {
-        return $this->belongsTo(Plan::class, 'plan_id', 'id');
+        return $query->where('is_admin', false)->where('banned', false)
+            ->where(fn (Builder $q) => $q->whereNull('expired_at')->orWhere('expired_at', '>', $at ?? time()))
+            ->where(fn (Builder $q) => $q->whereNull('transfer_enable')->orWhere(function (Builder $q) {
+                $q->where('transfer_enable', '>', 0)
+                    ->whereRaw('COALESCE(u, 0) + COALESCE(d, 0) < transfer_enable');
+            }));
     }
 
-    public function group(): BelongsTo
+    public function scopeAuthorizedFor(Builder $query, Server $server): Builder
     {
-        return $this->belongsTo(ServerGroup::class, 'group_id', 'id');
+        return $query->where(fn (Builder $q) => $q->where('access_mode', 'all')
+            ->orWhere(fn (Builder $q) => $q->where('access_mode', 'restricted')
+                ->whereHas('servers', fn (Builder $nodes) => $nodes->whereKey($server->id))));
+    }
+
+    public function servers(): BelongsToMany
+    {
+        return $this->belongsToMany(Server::class, 'v2_user_server', 'user_id', 'server_id');
     }
 
     public function stat(): HasMany
@@ -123,76 +108,52 @@ class User extends Authenticatable
         return $this->hasMany(StatUser::class, 'user_id', 'id');
     }
 
-    public function parent(): BelongsTo
-    {
-        return $this->belongsTo(self::class, 'parent_id', 'id');
-    }
-
-    /**
-     * 关联流量重置记录
-     */
     public function trafficResetLogs(): HasMany
     {
         return $this->hasMany(TrafficResetLog::class, 'user_id', 'id');
     }
 
-    /**
-     * 检查用户是否处于活跃状态
-     */
     public function isActive(): bool
     {
-        return !$this->banned && 
-               ($this->expired_at === null || $this->expired_at > time()) &&
-               $this->plan_id !== null;
+        return !$this->is_admin && !$this->banned && ($this->expired_at === null || $this->expired_at > time());
     }
 
-    /** 
-     * 检查用户是否可用节点流量且充足
-     */
     public function isAvailable(): bool
-    {     
-        return $this->isActive() && $this->getRemainingTraffic() > 0;   
-    }
-
-    /**
-     * 检查是否需要重置流量
-     */
-    public function shouldResetTraffic(): bool
     {
-        return $this->isActive() &&
-               $this->next_reset_at !== null &&
-               $this->next_reset_at <= time();
+        return $this->isActive() && ($this->transfer_enable === null
+            || ($this->transfer_enable > 0 && $this->getTotalUsedTraffic() < $this->transfer_enable));
     }
 
-    /**
-     * 获取总使用流量
-     */
+    public function canAccessServer(Server $server): bool
+    {
+        return $this->access_mode === 'all' || ($this->access_mode === 'restricted'
+            && $this->servers()->whereKey($server->id)->exists());
+    }
+
     public function getTotalUsedTraffic(): int
     {
-        return ($this->u ?? 0) + ($this->d ?? 0);
+        return (int) ($this->u ?? 0) + (int) ($this->d ?? 0);
     }
 
-    /**
-     * 获取剩余流量
-     */
-    public function getRemainingTraffic(): int
+    public function getRemainingTraffic(): ?int
     {
-        $used = $this->getTotalUsedTraffic();
-        $total = $this->transfer_enable ?? 0;
-        return max(0, $total - $used);
+        return $this->transfer_enable === null ? null : max(0, $this->transfer_enable - $this->getTotalUsedTraffic());
     }
 
-    /**
-     * 获取流量使用百分比
-     */
-    public function getTrafficUsagePercentage(): float
+    public function getTrafficUsagePercentage(): ?float
     {
-        $total = $this->transfer_enable ?? 0;
-        if ($total <= 0) {
-            return 0;
-        }
-        
-        $used = $this->getTotalUsedTraffic();
-        return min(100, ($used / $total) * 100);
+        if ($this->transfer_enable === null) return null;
+        if ($this->transfer_enable <= 0) return 100.0;
+        return min(100, $this->getTotalUsedTraffic() / $this->transfer_enable * 100);
+    }
+
+    public function getActualUpload(): int
+    {
+        return max(0, (int) $this->u - (int) $this->legacy_u);
+    }
+
+    public function getActualDownload(): int
+    {
+        return max(0, (int) $this->d - (int) $this->legacy_d);
     }
 }

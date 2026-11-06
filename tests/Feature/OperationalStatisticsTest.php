@@ -45,6 +45,7 @@ class OperationalStatisticsTest extends TestCase
         $today = Carbon::today()->timestamp;
         $this->member(['created_at' => $yesterday]);
         $this->member(['created_at' => $today]);
+        $this->member(['is_admin' => true, 'created_at' => $yesterday]);
         // Yesterday's persisted traffic can be written today by the queue consumer.
         $this->serverStat(1, $yesterday, 120, 80);
         $this->serverStat(1, $today, 30, 70);
@@ -60,7 +61,8 @@ class OperationalStatisticsTest extends TestCase
         $this->assertEquals(1, $stat->register_count);
         $this->assertEquals(200, $stat->transfer_used_total);
         foreach (['order_count', 'order_total', 'paid_count', 'paid_total', 'commission_count', 'commission_total', 'invite_count'] as $field) {
-            $this->assertEquals(0, $stat->$field);
+            $this->assertArrayNotHasKey($field, $stat->getAttributes());
+            $this->assertFalse(Schema::hasColumn('v2_stat', $field));
         }
     }
 
@@ -83,12 +85,12 @@ class OperationalStatisticsTest extends TestCase
         $this->assertSame(60, $ranking[1]['d']);
     }
 
-    public function test_member_traffic_rank_sums_rates_without_monthly_double_counting(): void
+    public function test_member_traffic_rank_counts_actual_daily_bytes_without_monthly_double_counting(): void
     {
         $memberId = $this->member();
         $today = Carbon::today()->timestamp;
-        foreach ([['1.00', 20, 30, $today, 'd'], ['2.00', 40, 10, $today, 'd'], ['1.00', 9999, 9999, $today + 60, 'm'], ['1.00', 8888, 8888, Carbon::tomorrow()->timestamp, 'd']] as [$rate, $u, $d, $at, $type]) {
-            StatUser::create(['user_id' => $memberId, 'server_rate' => $rate, 'u' => $u, 'd' => $d, 'record_at' => $at, 'record_type' => $type]);
+        foreach ([[60, 40, $today, 'd'], [9999, 9999, $today, 'm'], [8888, 8888, Carbon::tomorrow()->timestamp, 'd']] as [$u, $d, $at, $type]) {
+            StatUser::create(['user_id' => $memberId, 'u' => $u, 'd' => $d, 'record_at' => $at, 'record_type' => $type]);
         }
 
         $ranking = app(StatisticalService::class)->getRanking('user_traffic_rank');
@@ -98,17 +100,19 @@ class OperationalStatisticsTest extends TestCase
         $this->assertEquals(60, $ranking[0]['u']);
         $this->assertEquals(40, $ranking[0]['d']);
         $this->assertSame($memberId, $ranking[0]['user_id']);
+        $this->assertFalse(Schema::hasColumn('v2_stat_user', 'server_rate'));
     }
 
-    public function test_dashboard_uses_daily_traffic_and_returns_zero_financial_compatibility_fields(): void
+    public function test_dashboard_uses_daily_traffic_and_excludes_admins_and_retired_fields(): void
     {
-        $this->member(['plan_id' => 1, 'expired_at' => null, 't' => Carbon::now()->timestamp, 'online_count' => 2]);
-        $this->member(['plan_id' => 1, 'banned' => true, 'created_at' => Carbon::now()->subMonth()->timestamp]);
+        $this->member(['expired_at' => null, 't' => Carbon::now()->timestamp, 'online_count' => 2]);
+        $this->member(['banned' => true, 'created_at' => Carbon::now()->subMonth()->timestamp]);
+        $this->member(['is_admin' => true, 't' => Carbon::now()->timestamp, 'online_count' => 99]);
         $this->serverStat(1, Carbon::today()->timestamp, 10, 20);
         $this->serverStat(1, Carbon::yesterday()->timestamp, 30, 40);
         $this->serverStat(1, Carbon::now()->startOfMonth()->timestamp, 1000, 2000, 'm');
 
-        $stats = app(StatController::class)->getStats()['data'];
+        $stats = app(StatController::class)->getStats()->getData(true)['data'];
 
         $this->assertSame(2, $stats['totalUsers']);
         $this->assertSame(1, $stats['activeUsers']);
@@ -119,8 +123,9 @@ class OperationalStatisticsTest extends TestCase
         $this->assertSame(['upload' => 40, 'download' => 60, 'total' => 100], $stats['monthTraffic']);
         $this->assertSame($stats['monthTraffic'], $stats['totalTraffic']);
         foreach (['todayIncome', 'currentMonthIncome', 'lastMonthIncome', 'currentMonthCommissionPayout', 'commissionPendingTotal', 'ticketPendingTotal'] as $field) {
-            $this->assertSame(0, $stats[$field]);
+            $this->assertArrayNotHasKey($field, $stats);
         }
+        $this->assertSame('actual_bytes', $stats['trafficAccounting']['basis']);
     }
 
     public function test_operational_history_does_not_expose_archived_revenue(): void
@@ -128,7 +133,7 @@ class OperationalStatisticsTest extends TestCase
         $at = Carbon::yesterday()->timestamp;
         $service = app(StatisticalService::class);
         Stat::create($service->generateStatData() + ['record_at' => $at, 'record_type' => 'd']);
-        Stat::where('record_at', $at)->update(['paid_total' => 99999, 'register_count' => 3]);
+        Stat::where('record_at', $at)->update(['register_count' => 3]);
 
         $history = $service->getStatRecord('register_count')->toArray();
 
@@ -141,7 +146,8 @@ class OperationalStatisticsTest extends TestCase
     {
         return DB::table('v2_user')->insertGetId($attributes + [
             'email' => Str::random(12) . '@example.test',
-            'password' => 'test-password-hash',
+            'password' => null,
+            'transfer_enable' => null,
             'token' => Str::random(32),
             'uuid' => (string) Str::uuid(),
             'created_at' => Carbon::now()->timestamp,
@@ -157,8 +163,6 @@ class OperationalStatisticsTest extends TestCase
             'host' => '127.0.0.1',
             'port' => 443,
             'server_port' => 443,
-            'rate' => '1',
-            'group_id' => [1],
             'enabled' => true,
         ]);
     }

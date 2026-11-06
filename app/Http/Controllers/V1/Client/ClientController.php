@@ -5,10 +5,8 @@ namespace App\Http\Controllers\V1\Client;
 use App\Http\Controllers\Controller;
 use App\Models\Server;
 use App\Protocols\General;
-use App\Services\Plugin\HookManager;
 use App\Services\ServerService;
 use App\Services\UserService;
-use App\Utils\Helper;
 use Illuminate\Http\Request;
 
 class ClientController extends Controller
@@ -33,7 +31,6 @@ class ClientController extends Controller
 
     public function subscribe(Request $request)
     {
-        HookManager::call('client.subscribe.before');
         $request->validate([
             'types' => ['nullable', 'string'],
             'filter' => ['nullable', 'string'],
@@ -44,7 +41,6 @@ class ClientController extends Controller
         $userService = new UserService();
 
         if (!$userService->isAvailable($user)) {
-            HookManager::call('client.subscribe.unavailable');
             return response('', 403, ['Content-Type' => 'text/plain']);
         }
 
@@ -55,7 +51,6 @@ class ClientController extends Controller
     {
         if ($servers === null) {
             $servers = ServerService::getAvailableServers($user);
-            $servers = HookManager::filter('client.subscribe.servers', $servers, $user, $request);
         }
 
         $clientInfo = $this->getClientInfo($request);
@@ -72,7 +67,6 @@ class ClientController extends Controller
             filterKeywords: $filterKeywords
         );
 
-        $this->setSubscribeInfoToServers($serversFiltered, $user, count($servers) - count($serversFiltered));
         $serversFiltered = $this->addPrefixToServerName($serversFiltered);
 
         // Instantiate the protocol class with filtered servers and client info
@@ -126,7 +120,7 @@ class ClientController extends Controller
     {
         return collect($servers)->filter(function ($server) use ($allowedTypes, $filterKeywords) {
             // Condition 1: Server type must be in the list of allowed types
-            if ($allowedTypes && !in_array($server['type'], $allowedTypes)) {
+            if (!in_array($server['type'], $allowedTypes)) {
                 return false; // Filter out (don't keep)
             }
 
@@ -190,35 +184,7 @@ class ClientController extends Controller
         ];
     }
 
-    private function setSubscribeInfoToServers(&$servers, $user, $rejectServerCount = 0)
-    {
-        if (!isset($servers[0]))
-            return;
-        if ($rejectServerCount > 0) {
-            array_unshift($servers, array_merge($servers[0], [
-                'name' => "过滤掉{$rejectServerCount}条线路",
-            ]));
-        }
-        if (!(int) admin_setting('show_info_to_server_enable', 0))
-            return;
-        $useTraffic = $user['u'] + $user['d'];
-        $totalTraffic = $user['transfer_enable'];
-        $remainingTraffic = Helper::trafficConvert($totalTraffic - $useTraffic);
-        $expiredDate = $user['expired_at'] ? date('Y-m-d', $user['expired_at']) : __('长期有效');
-        $userService = new UserService();
-        $resetDay = $userService->getResetDay($user);
-        array_unshift($servers, array_merge($servers[0], [
-            'name' => "套餐到期：{$expiredDate}",
-        ]));
-        if ($resetDay) {
-            array_unshift($servers, array_merge($servers[0], [
-                'name' => "距离下次重置剩余：{$resetDay} 天",
-            ]));
-        }
-        array_unshift($servers, array_merge($servers[0], [
-            'name' => "剩余流量：{$remainingTraffic}",
-        ]));
-    }
+
 
     private function addPrefixToServerName(array $servers): array
     {

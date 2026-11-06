@@ -135,6 +135,9 @@ class NodeWorker
 
     public function onWebSocketConnect(TcpConnection $conn, $httpMessage): void
     {
+        // Setting is request-cached; a long-running WS worker must reload it per handshake.
+        app()->forgetInstance(\App\Support\Setting::class);
+
         $queryString = '';
         if (is_string($httpMessage)) {
             $queryString = parse_url($httpMessage, PHP_URL_QUERY) ?? '';

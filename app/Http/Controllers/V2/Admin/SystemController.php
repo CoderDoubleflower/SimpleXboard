@@ -19,11 +19,17 @@ class SystemController extends Controller
 {
     public function getSystemStatus()
     {
-        $data = [
-            'schedule' => $this->getScheduleStatus(),
-            'horizon' => $this->getHorizonStatus(),
-            'schedule_last_runtime' => Cache::get(CacheKey::get('SCHEDULE_LAST_CHECK_AT', null)),
-        ];
+        try {
+            $data = [
+                'schedule' => $this->getScheduleStatus(),
+                'horizon' => $this->getHorizonStatus(),
+                'schedule_last_runtime' => Cache::get(CacheKey::get('SCHEDULE_LAST_CHECK_AT', null)),
+                'degraded' => false,
+            ];
+        } catch (\Throwable) {
+            $data = ['schedule' => false, 'horizon' => false, 'schedule_last_runtime' => null,
+                'degraded' => true, 'message' => '运行状态暂不可用，请检查 Redis 与队列服务'];
+        }
         return $this->success($data);
     }
 
@@ -101,7 +107,7 @@ class SystemController extends Controller
     public function getAuditLog(Request $request)
     {
         $current = max(1, (int) $request->input('current', 1));
-        $pageSize = max(10, (int) $request->input('page_size', 10));
+        $pageSize = min(100, max(1, (int) $request->input('page_size', 20)));
 
         $builder = AdminAuditLog::with('admin:id,email')
             ->orderBy('id', 'DESC')
@@ -123,22 +129,27 @@ class SystemController extends Controller
     public function getHorizonFailedJobs(Request $request, JobRepository $jobRepository)
     {
         $current = max(1, (int) $request->input('current', 1));
-        $pageSize = max(10, (int) $request->input('page_size', 20));
-        $offset = ($current - 1) * $pageSize;
-
-        $failedJobs = collect($jobRepository->getFailed())
-            ->sortByDesc('failed_at')
-            ->slice($offset, $pageSize)
-            ->values();
-
-        $total = $jobRepository->countFailed();
-
-        return response()->json([
-            'data' => $failedJobs,
-            'total' => $total,
-            'current' => $current,
-            'page_size' => $pageSize,
-        ]);
+        $pageSize = min(100, max(1, (int) $request->input('page_size', 20)));
+        try {
+            $failed = collect($jobRepository->getFailed())->sortByDesc('failed_at')
+                ->slice(($current - 1) * $pageSize, $pageSize)->values()
+                ->map(function ($job) {
+                    $payload = json_decode(data_get($job, 'payload', '{}'), true) ?: [];
+                    return [
+                        'id' => data_get($job, 'id'),
+                        'name' => $payload['displayName'] ?? data_get($job, 'name', '队列任务'),
+                        'connection' => data_get($job, 'connection'),
+                        'queue' => data_get($job, 'queue'),
+                        'exception' => mb_substr((string) data_get($job, 'exception', ''), 0, 12000),
+                        'failed_at' => data_get($job, 'failed_at'),
+                    ];
+                });
+            return response()->json(['data' => $failed, 'total' => $jobRepository->countFailed(),
+                'current' => $current, 'page_size' => $pageSize]);
+        } catch (\Throwable) {
+            return response()->json(['data' => [], 'total' => 0, 'current' => $current, 'page_size' => $pageSize,
+                'degraded' => true, 'message' => '暂时无法读取队列状态，请检查 Redis 与 Horizon']);
+        }
     }
 
 }

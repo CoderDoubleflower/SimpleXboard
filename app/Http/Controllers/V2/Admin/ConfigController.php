@@ -5,255 +5,65 @@ namespace App\Http\Controllers\V2\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ConfigSave;
 use App\Models\SubscribeTemplate;
-use App\Services\MailService;
-use App\Services\TelegramService;
-use App\Services\ThemeService;
-use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ConfigController extends Controller
 {
+    private const TEMPLATES = ['singbox', 'clash', 'clashmeta', 'stash', 'surge', 'surfboard'];
 
-
-    public function getEmailTemplate()
+    public function fetch()
     {
-        $path = resource_path('views/mail/');
-        $files = array_map(function ($item) use ($path) {
-            return str_replace($path, '', $item);
-        }, glob($path . '*'));
-        return $this->success($files);
-    }
-
-    public function getThemeTemplate()
-    {
-        $path = public_path('theme/');
-        $files = array_map(function ($item) use ($path) {
-            return str_replace($path, '', $item);
-        }, glob($path . '*'));
-        return $this->success($files);
-    }
-
-    public function testSendMail(Request $request)
-    {
-        $mailLog = MailService::sendEmail([
-            'email' => $request->user()->email,
-            'subject' => 'This is xboard test email',
-            'template_name' => 'notify',
-            'template_value' => [
-                'name' => admin_setting('app_name', 'XBoard'),
-                'content' => 'This is xboard test email',
-                'url' => admin_setting('app_url')
-            ]
-        ]);
-        return response([
-            'data' => $mailLog,
-        ]);
-    }
-    public function setTelegramWebhook(Request $request)
-    {
-        $hookUrl = $this->resolveTelegramWebhookUrl();
-        if (blank($hookUrl)) {
-            return $this->fail([422, 'Telegram Webhook地址未配置']);
-        }
-        $hookUrl .= '?' . http_build_query([
-            'access_token' => md5(admin_setting('telegram_bot_token', $request->input('telegram_bot_token')))
-        ]);
-        $telegramService = new TelegramService($request->input('telegram_bot_token'));
-        $telegramService->getMe();
-        $telegramService->setWebhook(url: $hookUrl);
-        $telegramService->registerBotCommands();
-        return $this->success([
-            'success' => true,
-            'webhook_url' => $hookUrl,
-            'webhook_base_url' => $this->getTelegramWebhookBaseUrl(),
-        ]);
-    }
-
-    public function fetch(Request $request)
-    {
-        $key = $request->input('key');
-        $configMappings = $this->getConfigMappings();
-        if ($key && isset($configMappings[$key])) {
-            return $this->success([$key => $configMappings[$key]]);
-        }
-
-        return $this->success($configMappings);
-    }
-
-    /**
-     * 获取配置映射数据
-     * 
-     * @return array 配置映射数组
-     */
-    private function getConfigMappings(): array
-    {
-        return [
-            // Empty groups keep older admin bundles readable without exposing retired settings.
-            'invite' => [],
+        $data = [
             'site' => [
-                'logo' => admin_setting('logo'),
-                'force_https' => (int) admin_setting('force_https', 0),
-                'stop_register' => 1,
-                'app_name' => admin_setting('app_name', 'XBoard'),
-                'app_description' => admin_setting('app_description', 'XBoard is best!'),
-                'app_url' => admin_setting('app_url'),
-                'subscribe_url' => admin_setting('subscribe_url'),
-                'tos_url' => admin_setting('tos_url'),
+                'app_name' => admin_setting('app_name', 'SimpleXboard'),
+                'app_url' => admin_setting('app_url', ''),
+                'subscribe_url' => admin_setting('subscribe_url', ''),
+                'force_https' => (bool) admin_setting('force_https', false),
             ],
             'subscribe' => [
-                'reset_traffic_method' => (int) admin_setting('reset_traffic_method', 0),
-                'show_info_to_server_enable' => (bool) admin_setting('show_info_to_server_enable', 0),
-                'show_protocol_to_server_enable' => (bool) admin_setting('show_protocol_to_server_enable', 0),
                 'subscribe_path' => admin_setting('subscribe_path', 's'),
-            ],
-            'frontend' => [
-                'frontend_theme' => admin_setting('frontend_theme', 'Xboard'),
-                'frontend_theme_sidebar' => admin_setting('frontend_theme_sidebar', 'light'),
-                'frontend_theme_header' => admin_setting('frontend_theme_header', 'dark'),
-                'frontend_theme_color' => admin_setting('frontend_theme_color', 'default'),
-                'frontend_background_url' => admin_setting('frontend_background_url'),
+                'show_protocol_to_server_enable' => (bool) admin_setting('show_protocol_to_server_enable', false),
             ],
             'server' => [
-                'server_token' => admin_setting('server_token'),
-                'server_pull_interval' => admin_setting('server_pull_interval', 60),
-                'server_push_interval' => admin_setting('server_push_interval', 60),
-                'device_limit_mode' => (int) admin_setting('device_limit_mode', 0),
-                'server_ws_enable' => (bool) admin_setting('server_ws_enable', 1),
+                'server_token' => admin_setting('server_token', ''),
+                'server_pull_interval' => (int) admin_setting('server_pull_interval', 60),
+                'server_push_interval' => (int) admin_setting('server_push_interval', 60),
+                'server_ws_enable' => (bool) admin_setting('server_ws_enable', true),
                 'server_ws_url' => admin_setting('server_ws_url', ''),
             ],
-            'email' => [
-                'email_host' => admin_setting('email_host'),
-                'email_port' => admin_setting('email_port'),
-                'email_username' => admin_setting('email_username'),
-                'email_password' => admin_setting('email_password'),
-                'email_encryption' => admin_setting('email_encryption'),
-                'email_from_address' => admin_setting('email_from_address'),
-            ],
-            'telegram' => [
-                'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),
-                'telegram_bot_token' => admin_setting('telegram_bot_token'),
-                'telegram_webhook_url' => admin_setting('telegram_webhook_url'),
-                'telegram_discuss_link' => admin_setting('telegram_discuss_link')
-            ],
-            'app' => [],
             'safe' => [
-                'safe_mode_enable' => (bool) admin_setting('safe_mode_enable', 0),
                 'secure_path' => admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))),
-                'captcha_enable' => (bool) admin_setting('captcha_enable', 0),
-                'captcha_type' => admin_setting('captcha_type', 'recaptcha'),
-                'recaptcha_key' => admin_setting('recaptcha_key', ''),
-                'recaptcha_site_key' => admin_setting('recaptcha_site_key', ''),
-                'recaptcha_v3_secret_key' => admin_setting('recaptcha_v3_secret_key', ''),
-                'recaptcha_v3_site_key' => admin_setting('recaptcha_v3_site_key', ''),
-                'recaptcha_v3_score_threshold' => admin_setting('recaptcha_v3_score_threshold', 0.5),
-                'turnstile_secret_key' => admin_setting('turnstile_secret_key', ''),
-                'turnstile_site_key' => admin_setting('turnstile_site_key', ''),
-                'password_limit_enable' => (bool) admin_setting('password_limit_enable', 1),
-                'password_limit_count' => admin_setting('password_limit_count', 5),
-                'password_limit_expire' => admin_setting('password_limit_expire', 60),
-                // 保持向后兼容
-                'recaptcha_enable' => (bool) admin_setting('captcha_enable', 0)
+                'safe_mode_enable' => (bool) admin_setting('safe_mode_enable', false),
+                'password_limit_enable' => (bool) admin_setting('password_limit_enable', true),
+                'password_limit_count' => (int) admin_setting('password_limit_count', 5),
+                'password_limit_expire' => (int) admin_setting('password_limit_expire', 15),
             ],
-            'subscribe_template' => [
-                'subscribe_template_singbox' => $this->formatTemplateContent(
-                    subscribe_template('singbox') ?? '',
-                    'json'
-                ),
-                'subscribe_template_clash' => subscribe_template('clash') ?? '',
-                'subscribe_template_clashmeta' => subscribe_template('clashmeta') ?? '',
-                'subscribe_template_stash' => subscribe_template('stash') ?? '',
-                'subscribe_template_surge' => subscribe_template('surge') ?? '',
-                'subscribe_template_surfboard' => subscribe_template('surfboard') ?? ''
-            ]
+            'subscribe_template' => [],
         ];
+        foreach (self::TEMPLATES as $type) {
+            $content = subscribe_template($type) ?? '';
+            $data['subscribe_template']['subscribe_template_' . $type] = is_string($content)
+                ? $content : json_encode($content, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
+        return $this->success($data);
     }
 
     public function save(ConfigSave $request)
     {
-        // Only active settings are writable, including when an older bundle submits retired keys.
-        $data = $request->validated();
-
-        $templateKeys = [
-            'subscribe_template_singbox' => 'singbox',
-            'subscribe_template_clash' => 'clash',
-            'subscribe_template_clashmeta' => 'clashmeta',
-            'subscribe_template_stash' => 'stash',
-            'subscribe_template_surge' => 'surge',
-            'subscribe_template_surfboard' => 'surfboard',
-        ];
-
-        foreach ($data as $k => $v) {
-            if (isset($templateKeys[$k])) {
-                SubscribeTemplate::setContent($templateKeys[$k], $v);
-                continue;
+        DB::transaction(function () use ($request) {
+            $settings = [];
+            foreach ($request->validated() as $key => $value) {
+                if (str_starts_with($key, 'subscribe_template_')) {
+                    SubscribeTemplate::setContent(substr($key, strlen('subscribe_template_')), $value);
+                } else {
+                    $settings[$key] = $value;
+                }
             }
-            if ($k == 'frontend_theme') {
-                $themeService = app(ThemeService::class);
-                $themeService->switch($v);
+            if ($settings) {
+                admin_setting($settings);
             }
-            admin_setting([$k => $v]);
-        }
-
-        return $this->success(true);
-    }
-
-    /**
-     * 格式化模板内容
-     * 
-     * @param mixed $content 模板内容
-     * @param string $format 输出格式 (json|string)
-     * @return string 格式化后的内容
-     */
-    private function formatTemplateContent(mixed $content, string $format = 'string'): string
-    {
-        return match ($format) {
-            'json' => match (true) {
-                    is_array($content) => json_encode(
-                        value: $content,
-                        flags: JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-                    ),
-
-                    is_string($content) && str($content)->isJson() => rescue(
-                        callback: fn() => json_encode(
-                            value: json_decode($content, associative: true, flags: JSON_THROW_ON_ERROR),
-                            flags: JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-                        ),
-                        rescue: $content,
-                        report: false
-                    ),
-
-                    default => str($content)->toString()
-                },
-
-            default => str($content)->toString()
-        };
-    }
-
-    private function getTelegramWebhookBaseUrl(): ?string
-    {
-        $customUrl = trim((string) admin_setting('telegram_webhook_url', ''));
-        if ($customUrl !== '') {
-            return rtrim($customUrl, '/');
-        }
-
-        $appUrl = trim((string) admin_setting('app_url', ''));
-        if ($appUrl !== '') {
-            return rtrim($appUrl, '/');
-        }
-
-        return null;
-    }
-
-    private function resolveTelegramWebhookUrl(): ?string
-    {
-        $baseUrl = $this->getTelegramWebhookBaseUrl();
-        if (!$baseUrl) {
-            return null;
-        }
-
-        if (str_contains($baseUrl, '/api/v1/guest/telegram/webhook')) {
-            return $baseUrl;
-        }
-
-        return $baseUrl . '/api/v1/guest/telegram/webhook';
+        });
+        $path = admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key'))));
+        return $this->success(['saved' => true, 'secure_path' => $path, 'admin_url' => '/' . $path]);
     }
 }

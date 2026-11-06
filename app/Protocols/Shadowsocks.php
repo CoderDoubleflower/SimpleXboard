@@ -25,7 +25,7 @@ class Shadowsocks extends AbstractProtocol
         $subs['bytes_remaining'] = '';
 
         $bytesUsed = $user['u'] + $user['d'];
-        $bytesRemaining = $user['transfer_enable'] - $bytesUsed;
+        $bytesRemaining = $user['transfer_enable'] === null ? null : max(0, $user['transfer_enable'] - $bytesUsed);
 
         foreach ($servers as $item) {
             if (
@@ -38,7 +38,11 @@ class Shadowsocks extends AbstractProtocol
 
         $subs['version'] = 1;
         $subs['bytes_used'] = $bytesUsed;
-        $subs['bytes_remaining'] = $bytesRemaining;
+        if ($bytesRemaining !== null) {
+            $subs['bytes_remaining'] = $bytesRemaining;
+        } else {
+            unset($subs['bytes_remaining']);
+        }
         $subs['servers'] = array_merge($subs['servers'], $configs);
 
         return response()->json($subs)

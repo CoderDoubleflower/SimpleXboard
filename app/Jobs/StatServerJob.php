@@ -10,7 +10,6 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -70,12 +69,10 @@ class StatServerJob implements ShouldQueue
 
     protected function updateServerTraffic(int $u, int $d): void
     {
-        DB::table('v2_server')
-            ->where('id', $this->server['id'])
-            ->incrementEach(
-                ['u' => $u, 'd' => $d],
-                ['updated_at' => Carbon::now()]
-            );
+        DB::transaction(function () use ($u, $d) {
+            $node = Server::lockForUpdate()->find($this->server['id']);
+            if ($node) $node->update(['u' => (int) $node->u + $u, 'd' => (int) $node->d + $d]);
+        });
     }
 
     protected function processServerStat(int $u, int $d, int $recordAt): void

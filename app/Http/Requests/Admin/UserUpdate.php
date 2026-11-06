@@ -2,60 +2,32 @@
 
 namespace App\Http\Requests\Admin;
 
-use App\Services\Plugin\HookManager;
 use App\Http\Requests\Concerns\NormalizesEmail;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class UserUpdate extends FormRequest
 {
     use NormalizesEmail;
-    /**
-     * Get the validation rules that apply to the request.
-     *
-     * @return array
-     */
-    public function rules()
+
+    public function rules(): array
     {
-        $rules = [
-            'id' => 'required|integer',
-            'email' => 'email:strict|max:64',
-            'password' => 'nullable|min:8',
-            'transfer_enable' => 'numeric|min:0',
-            'expired_at' => 'nullable|integer',
-            'banned' => 'bool',
-            'plan_id' => 'nullable|integer|exists:v2_plan,id',
-            'is_admin' => 'boolean',
-            'is_staff' => 'boolean',
-            'u' => 'integer',
-            'd' => 'integer',
-            'remarks' => 'nullable',
-            'speed_limit' => 'nullable|integer',
-            'device_limit' => 'nullable|integer'
+        return [
+            'id' => 'required|integer|exists:v2_user,id',
+            'name' => 'sometimes|nullable|string|max:120',
+            'email' => ['sometimes', 'nullable', 'email:strict', 'max:64', Rule::unique('v2_user', 'email')->ignore((int) $this->input('id'))],
+            'transfer_enable' => 'sometimes|nullable|integer|min:0',
+            'expired_at' => 'sometimes|nullable|integer|min:0',
+            'banned' => 'sometimes|boolean',
+            'speed_limit' => 'sometimes|nullable|integer|min:0',
+            'device_limit' => 'sometimes|nullable|integer|min:0',
+            'remarks' => 'sometimes|nullable|string|max:2000',
+            'access_mode' => 'sometimes|in:all,restricted',
+            'server_ids' => 'sometimes|array',
+            'server_ids.*' => 'integer|distinct|exists:v2_server,id',
+            'password' => 'prohibited', 'is_admin' => 'prohibited', 'is_staff' => 'prohibited',
+            'plan_id' => 'prohibited', 'group_id' => 'prohibited',
+            'u' => 'prohibited', 'd' => 'prohibited', 'uuid' => 'prohibited', 'token' => 'prohibited',
         ];
-
-        return HookManager::filter('admin.user.update.rules', $rules, $this);
-    }
-
-    public function messages()
-    {
-        $messages = [
-            'email.required' => '邮箱不能为空',
-            'email.email' => '邮箱格式不正确',
-            'transfer_enable.numeric' => '流量格式不正确',
-            'expired_at.integer' => '到期时间格式不正确',
-            'banned.in' => '是否封禁格式不正确',
-            'is_admin.required' => '是否管理员不能为空',
-            'is_admin.in' => '是否管理员格式不正确',
-            'is_staff.required' => '是否员工不能为空',
-            'is_staff.in' => '是否员工格式不正确',
-            'plan_id.integer' => '订阅计划格式不正确',
-            'u.integer' => '上行流量格式不正确',
-            'd.integer' => '下行流量格式不正确',
-            'password.min' => '密码长度最小8位',
-            'speed_limit.integer' => '限速格式不正确',
-            'device_limit.integer' => '设备数量格式不正确'
-        ];
-
-        return HookManager::filter('admin.user.update.messages', $messages, $this);
     }
 }

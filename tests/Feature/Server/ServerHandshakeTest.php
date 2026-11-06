@@ -122,8 +122,6 @@ class ServerHandshakeTest extends TestCase
             'host' => '127.0.0.1',
             'port' => 443,
             'server_port' => 443,
-            'rate' => '1',
-            'group_id' => [1],
             'enabled' => true,
         ]);
     }

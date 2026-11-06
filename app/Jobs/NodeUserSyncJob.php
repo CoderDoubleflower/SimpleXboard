@@ -16,30 +16,25 @@ class NodeUserSyncJob implements ShouldQueue
 
     public $tries = 2;
     public $timeout = 10;
+    private bool $revokeExisting = false;
 
     public function __construct(
         private readonly int $userId,
         private readonly string $action,
-        private readonly ?int $oldGroupId = null
+        bool $revokeExisting = false
     ) {
+        $this->revokeExisting = $revokeExisting;
         $this->onQueue('node_sync');
     }
 
     public function handle(): void
     {
+        // Read current committed state; delayed jobs must never resurrect old credentials.
         $user = User::find($this->userId);
-
-        if ($this->action === 'updated' || $this->action === 'created') {
-            if ($this->oldGroupId) {
-                NodeSyncService::notifyUserRemovedFromGroup($this->userId, $this->oldGroupId);
-            }
-            if ($user) {
-                NodeSyncService::notifyUserChanged($user);
-            }
-        } elseif ($this->action === 'deleted') {
-            if ($this->oldGroupId) {
-                NodeSyncService::notifyUserRemovedFromGroup($this->userId, $this->oldGroupId);
-            }
+        if ($user) {
+            NodeSyncService::notifyUserChanged($user, $this->revokeExisting);
+        } else {
+            NodeSyncService::notifyUserRemoved($this->userId);
         }
     }
 }

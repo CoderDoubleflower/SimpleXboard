@@ -6,97 +6,55 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class ConfigSave extends FormRequest
 {
-    const RULES = [
-        // site
-        'logo' => 'nullable|url',
-        'force_https' => '',
-        'app_name' => '',
-        'app_description' => '',
-        'app_url' => 'nullable|url',
-        'subscribe_url' => 'nullable',
-        'tos_url' => 'nullable|url',
-        // subscribe
-        'reset_traffic_method' => 'in:0,1,2,3,4',
-        'show_info_to_server_enable' => '',
-        'show_protocol_to_server_enable' => '',
-        'subscribe_path' => '',
-        // server
-        'server_token' => 'nullable|min:16',
-        'server_pull_interval' => 'integer',
-        'server_push_interval' => 'integer',
-        'device_limit_mode' => 'integer',
+    public const RULES = [
+        'app_name' => 'sometimes|required|string|max:80',
+        'app_url' => 'nullable|url:http,https|max:2048',
+        'subscribe_url' => 'nullable|string|max:4096',
+        'force_https' => 'boolean',
+        'subscribe_path' => 'sometimes|required|string|min:1|max:64|regex:/^[A-Za-z0-9_-]+$/|not_in:api,assets,storage',
+        'show_protocol_to_server_enable' => 'boolean',
+        'server_token' => 'nullable|string|min:16|max:256',
+        'server_pull_interval' => 'integer|min:10|max:3600',
+        'server_push_interval' => 'integer|min:10|max:3600',
         'server_ws_enable' => 'boolean',
-        'server_ws_url' => 'nullable|url',
-        // frontend
-        'frontend_theme' => '',
-        'frontend_theme_sidebar' => 'nullable|in:dark,light',
-        'frontend_theme_header' => 'nullable|in:dark,light',
-        'frontend_theme_color' => 'nullable|in:default,darkblue,black,green',
-        'frontend_background_url' => 'nullable|url',
-        // email
-        'email_host' => '',
-        'email_port' => '',
-        'email_username' => '',
-        'email_password' => '',
-        'email_encryption' => '',
-        'email_from_address' => '',
-        // telegram
-        'telegram_bot_enable' => '',
-        'telegram_bot_token' => '',
-        'telegram_webhook_url' => 'nullable|url',
-        'telegram_discuss_id' => '',
-        'telegram_channel_id' => '',
-        'telegram_discuss_link' => 'nullable|url',
-        // safe
-        'captcha_enable' => 'boolean',
-        'captcha_type' => 'in:recaptcha,turnstile,recaptcha-v3',
-        'recaptcha_enable' => 'boolean',
-        'recaptcha_key' => '',
-        'recaptcha_site_key' => '',
-        'recaptcha_v3_secret_key' => '',
-        'recaptcha_v3_site_key' => '',
-        'recaptcha_v3_score_threshold' => 'numeric|min:0|max:1',
-        'turnstile_secret_key' => '',
-        'turnstile_site_key' => '',
+        'server_ws_url' => 'nullable|string|max:2048|regex:#^wss?://[^\s]+$#',
         'safe_mode_enable' => 'boolean',
-        'secure_path' => 'min:8|regex:/^[\w-]*$/',
+        'secure_path' => 'sometimes|required|string|min:8|max:64|regex:/^[A-Za-z0-9_-]+$/|not_in:api,assets,storage',
         'password_limit_enable' => 'boolean',
-        'password_limit_count' => 'integer',
-        'password_limit_expire' => 'integer',
-        'subscribe_template_singbox' => 'nullable',
-        'subscribe_template_clash' => 'nullable',
-        'subscribe_template_clashmeta' => 'nullable',
-        'subscribe_template_stash' => 'nullable',
-        'subscribe_template_surge' => 'nullable',
-        'subscribe_template_surfboard' => 'nullable'
+        'password_limit_count' => 'integer|min:1|max:20',
+        'password_limit_expire' => 'integer|min:1|max:1440',
+        'subscribe_template_singbox' => 'nullable|string|max:262144',
+        'subscribe_template_clash' => 'nullable|string|max:262144',
+        'subscribe_template_clashmeta' => 'nullable|string|max:262144',
+        'subscribe_template_stash' => 'nullable|string|max:262144',
+        'subscribe_template_surge' => 'nullable|string|max:262144',
+        'subscribe_template_surfboard' => 'nullable|string|max:262144',
     ];
-    /**
-     * Get the validation rules that apply to the request.
-     *
-     * @return array
-     */
-    public function rules()
+
+    public function rules(): array
     {
         return self::RULES;
     }
 
-    public function messages()
+    public function withValidator($validator): void
     {
-        // illiteracy prompt
-        return [
-            'app_url.url' => '站点URL格式不正确，必须携带http(s)://',
-            'subscribe_url.url' => '订阅URL格式不正确，必须携带http(s)://',
-            'server_token.min' => '通讯密钥长度必须大于16位',
-            'tos_url.url' => '服务条款URL格式不正确，必须携带http(s)://',
-            'telegram_webhook_url.url' => 'Telegram Webhook地址格式不正确，必须携带http(s)://',
-            'telegram_discuss_link.url' => 'Telegram群组地址必须为URL格式，必须携带http(s)://',
-            'logo.url' => 'LOGO URL格式不正确，必须携带https(s)://',
-            'secure_path.min' => '后台路径长度最小为8位',
-            'secure_path.regex' => '后台路径只能为字母或数字',
-            'captcha_type.in' => '人机验证类型只能选择 recaptcha、turnstile 或 recaptcha-v3',
-            'recaptcha_v3_score_threshold.numeric' => 'reCAPTCHA v3 分数阈值必须为数字',
-            'recaptcha_v3_score_threshold.min' => 'reCAPTCHA v3 分数阈值不能小于0',
-            'recaptcha_v3_score_threshold.max' => 'reCAPTCHA v3 分数阈值不能大于1'
-        ];
+        $validator->after(function ($validator) {
+            $unknown = array_diff(array_keys($this->all()), array_keys(self::RULES));
+            foreach ($unknown as $key) {
+                $validator->errors()->add($key, '不支持的设置项');
+            }
+            $subscribe = $this->input('subscribe_path', admin_setting('subscribe_path', 's'));
+            $admin = $this->input('secure_path', admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))));
+            if ($subscribe === $admin) {
+                $validator->errors()->add('subscribe_path', '订阅路径不能与管理路径相同');
+            }
+            $subscribeUrl = $this->input('subscribe_url');
+            foreach (is_string($subscribeUrl) ? preg_split('/\s*,\s*/', $subscribeUrl, -1, PREG_SPLIT_NO_EMPTY) : [] as $url) {
+                if (!filter_var($url, FILTER_VALIDATE_URL) || !in_array(parse_url($url, PHP_URL_SCHEME), ['http', 'https'], true)
+                    || parse_url($url, PHP_URL_USER) !== null || parse_url($url, PHP_URL_QUERY) !== null || parse_url($url, PHP_URL_FRAGMENT) !== null) {
+                    $validator->errors()->add('subscribe_url', '订阅域名须为完整的 http(s) URL，不能包含凭据、查询或片段');
+                }
+            }
+        });
     }
 }

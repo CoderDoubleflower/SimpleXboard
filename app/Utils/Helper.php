@@ -2,7 +2,6 @@
 
 namespace App\Utils;
 
-use App\Services\Plugin\HookManager;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Validator;
 
@@ -110,24 +109,27 @@ class Helper
 
     public static function getSubscribeUrl(string $token, $subscribeUrl = null)
     {
-        $path = route('client.subscribe', ['token' => $token], false);
+        $path = route('client.subscribe', [
+            'subscription_path' => admin_setting('subscribe_path', 's'),
+            'token' => $token,
+        ], false);
         
         if ($subscribeUrl) {
             $finalUrl = rtrim($subscribeUrl, '/') . $path;
-            return HookManager::filter('subscribe.url', $finalUrl);
+            return $finalUrl;
         }
         
         $urlString = (string)admin_setting('subscribe_url', '');
-        $subscribeUrlList = $urlString ? explode(',', $urlString) : [];
+        $subscribeUrlList = $urlString ? array_values(array_filter(array_map('trim', explode(',', $urlString)))) : [];
         
         if (empty($subscribeUrlList)) {
-            return HookManager::filter('subscribe.url', url($path));
+            return url($path);
         }
         
         $selectedUrl = self::replaceByPattern(Arr::random($subscribeUrlList));
         $finalUrl = rtrim($selectedUrl, '/') . $path;
         
-        return HookManager::filter('subscribe.url', $finalUrl);
+        return $finalUrl;
     }
 
     public static function randomPort($range): int {
@@ -257,13 +259,4 @@ class Helper
         return $transfer_enable / 1073741824;
     }
 
-    /**
-     * 转义 Telegram Markdown 特殊字符
-     * @param string $text
-     * @return string
-     */
-    public static function escapeMarkdown(string $text): string
-    {
-        return str_replace(['_', '*', '`', '['], ['\_', '\*', '\`', '\['], $text);
-    }
 }

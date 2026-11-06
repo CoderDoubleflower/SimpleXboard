@@ -35,12 +35,6 @@ class Shadowrocket extends AbstractProtocol
         $user = $this->user;
 
         $uri = '';
-        //display remaining traffic and expire date
-        $upload = round($user['u'] / (1024 * 1024 * 1024), 2);
-        $download = round($user['d'] / (1024 * 1024 * 1024), 2);
-        $totalTraffic = round($user['transfer_enable'] / (1024 * 1024 * 1024), 2);
-        $expiredDate = $user['expired_at'] === null ? 'N/A' : date('Y-m-d', $user['expired_at']);
-        $uri .= "STATUS=🚀↑:{$upload}GB,↓:{$download}GB,TOT:{$totalTraffic}GB💡Expires:{$expiredDate}\r\n";
         foreach ($servers as $item) {
             if ($item['type'] === Server::TYPE_SHADOWSOCKS) {
                 $uri .= self::buildShadowsocks($item['password'], $item);
@@ -68,7 +62,8 @@ class Shadowrocket extends AbstractProtocol
             }
         }
         return response(base64_encode($uri))
-            ->header('content-type', 'text/plain');
+            ->header('content-type', 'text/plain')
+            ->header('subscription-userinfo', $this->subscriptionUserInfo());
     }
 
 
