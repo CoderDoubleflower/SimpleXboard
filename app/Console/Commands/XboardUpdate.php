@@ -2,64 +2,30 @@
 
 namespace App\Console\Commands;
 
-use App\Services\ThemeService;
-use App\Services\UpdateService;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Artisan;
-use App\Services\Plugin\PluginManager;
 
 class XboardUpdate extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'xboard:update';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
-    protected $description = 'xboard 更新';
+    protected $description = 'Apply database migrations and clear caches for the installed SimpleXboard code';
 
-    /**
-     * Create a new command instance.
-     *
-     * @return void
-     */
-    public function __construct()
+    public function handle(): int
     {
-        parent::__construct();
-    }
+        // Updating source files or images is an operator action. This command
+        // only applies migrations shipped with the current local release.
+        if ($this->call('migrate', ['--force' => true]) !== self::SUCCESS) {
+            return self::FAILURE;
+        }
 
-    /**
-     * Execute the console command.
-     *
-     * @return mixed
-     */
-    public function handle()
-    {
-        $this->info('正在导入数据库请稍等...');
-        Artisan::call("migrate", ['--force' => true]);
-        $this->info(Artisan::output());
-        $this->info('正在检查并安装默认插件...');
-        PluginManager::installDefaultPlugins();
-        $this->info('默认插件检查完成');
-        $updateService = new UpdateService();
-        $updateService->updateVersionCache();
-        $themeService = app(ThemeService::class);
-        $themeService->refreshCurrentTheme();
-        if (config('queue.default') === 'sync') {
-            $this->info('horizon:terminate skipped (sync queue, no workers to terminate).');
-        } else {
-            try {
-                Artisan::call('horizon:terminate');
-            } catch (\Throwable $e) {
-                $this->warn('horizon:terminate skipped: ' . $e->getMessage());
+        foreach (['config:clear', 'route:clear', 'view:clear'] as $command) {
+            if ($this->call($command) !== self::SUCCESS) {
+                return self::FAILURE;
             }
         }
-        $this->info('更新完毕，队列服务已重启，你无需进行任何操作。');
+
+        $this->info('本地版本迁移完成。请重启 Octane、Horizon 和节点 WebSocket 服务以加载新代码。');
+
+        return self::SUCCESS;
     }
 }

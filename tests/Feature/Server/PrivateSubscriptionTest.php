@@ -24,12 +24,11 @@ class PrivateSubscriptionTest extends TestCase
         Bus::fake();
         admin_setting(['server_token' => 'test-node-token', 'show_info_to_server_enable' => 0]);
         $this->member = app(UserService::class)->createUser([
-            'email' => 'member@example.com', 'password' => 'test-password',
+            'email' => 'member@example.com',
         ]);
         $this->member->save();
         $base = [
             'host' => 'node.example.com', 'port' => 443, 'server_port' => 443,
-            'rate' => 1, 'group_ids' => [(string) $this->member->group_id],
             'show' => true, 'enabled' => true,
         ];
         $this->vless = Server::create($base + [

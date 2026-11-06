@@ -3,670 +3,164 @@
 namespace App\Http\Controllers\V2\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Admin\UserGenerate;
 use App\Http\Requests\Admin\UserCreate;
+use App\Http\Requests\Admin\UserFetch;
 use App\Http\Requests\Admin\UserUpdate;
-use App\Models\Plan;
 use App\Models\User;
-use App\Services\AuthService;
-use App\Services\Plugin\HookManager;
 use App\Services\UserService;
-use App\Traits\QueryOperators;
 use App\Utils\Helper;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Http\Request;
-use Illuminate\Http\JsonResponse;
-
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 class UserController extends Controller
 {
-    use QueryOperators;
-
-    public function resetSecret(Request $request)
+    public function fetch(UserFetch $request)
     {
-        $user = User::find($request->input('id'));
-        if (!$user)
-            return $this->fail([400202, '用户不存在']);
-        $user->token = Helper::guid();
-        $user->uuid = Helper::guid(true);
-        $result = $user->save();
-
-        if ($result) {
-            HookManager::call('admin.user.secret.reset', [
-                'user' => $user,
-                'request' => $request,
-            ]);
-        }
-
-        return $this->success($result);
-    }
-
-    // Apply filters and sorts to the query builder.
-    private function applyFiltersAndSorts(Request $request, Builder|QueryBuilder $builder): void
-    {
-        $this->applyFilters($request, $builder);
-        $this->applySorting($request, $builder);
-    }
-
-    // Apply filters to the query builder.
-    private function applyFilters(Request $request, Builder|QueryBuilder $builder): void
-    {
-        if (!$request->has('filter')) {
-            return;
-        }
-
-        collect($request->input('filter'))->each(function ($filter) use ($builder) {
-            $field = $filter['id'];
-            $value = $filter['value'];
-            $logic = strtolower($filter['logic'] ?? 'and');
-
-            if ($logic === 'or') {
-                $builder->orWhere(function ($query) use ($field, $value) {
-                    $this->buildFilterQuery($query, $field, $value);
-                });
-            } else {
-                $builder->where(function ($query) use ($field, $value) {
-                    $this->buildFilterQuery($query, $field, $value);
-                });
-            }
-        });
-    }
-
-    // Build one filter query condition.
-    private function buildFilterQuery(Builder|QueryBuilder $query, string $field, mixed $value): void
-    {
-        $allowed = ['id', 'email', 'plan_id', 'group_id', 'group_ids', 'banned', 'is_admin', 'is_staff',
-            'transfer_enable', 'u', 'd', 'total_used', 'expired_at', 'created_at', 'updated_at',
-            'last_login_at', 'uuid', 'token', 'remarks', 'speed_limit', 'device_limit',
-            'plan.name', 'group.name'];
-        if (!in_array($field, $allowed, true)) {
-            // Never broaden a filtered bulk action when an old UI sends retired fields.
-            throw ValidationException::withMessages(['filter' => '不支持的成员筛选字段: ' . $field]);
-        }
-
-        // 处理关联查询
-        if (str_contains($field, '.')) {
-            if (!method_exists($query, 'whereHas')) {
-                return;
-            }
-            [$relation, $relationField] = explode('.', $field);
-            $query->whereHas($relation, function ($q) use ($relationField, $value) {
-                if (is_array($value)) {
-                    $values = $relationField === 'email'
-                        ? array_map(static fn ($value) => User::normalizeEmail((string) $value), $value)
-                        : $value;
-                    $q->whereIn($relationField, $values);
-                } elseif (is_string($value) && str_contains($value, ':')) {
-                    [$operator, $filterValue] = explode(':', $value, 2);
-                    if ($relationField === 'email') {
-                        $filterValue = User::normalizeEmail($filterValue);
-                    }
-                    $this->applyQueryCondition($q, $relationField, $operator, $filterValue);
-                } else {
-                    $filterValue = $relationField === 'email' ? User::normalizeEmail((string) $value) : $value;
-                    $q->where($relationField, 'like', "%{$filterValue}%");
-                }
-            });
-            return;
-        }
-
-        // 处理数组值的 'in' 操作
-        if (is_array($value)) {
-            $values = $field === 'email'
-                ? array_map(static fn ($value) => User::normalizeEmail((string) $value), $value)
-                : $value;
-            $query->whereIn($field === 'group_ids' ? 'group_id' : $field, $values);
-            return;
-        }
-
-        // 处理基于运算符的过滤
-        if (!is_string($value) || !str_contains($value, ':')) {
-            $filterValue = $field === 'email' ? User::normalizeEmail((string) $value) : $value;
-            $query->where($field, 'like', "%{$filterValue}%");
-            return;
-        }
-
-        [$operator, $filterValue] = explode(':', $value, 2);
-        if ($field === 'email') {
-            $filterValue = User::normalizeEmail($filterValue);
-        }
-
-        // 转换数字字符串为适当的类型
-        if (is_numeric($filterValue)) {
-            $filterValue = strpos($filterValue, '.') !== false
-                ? (float) $filterValue
-                : (int) $filterValue;
-        }
-
-        // 处理计算字段
-        $queryField = match ($field) {
-            'total_used' => DB::raw('(u + d)'),
-            default => $field
-        };
-
-        $this->applyQueryCondition($query, $queryField, $operator, $filterValue);
-    }
-
-    // Apply sorting rules to the query builder.
-    private function applySorting(Request $request, Builder|QueryBuilder $builder): void
-    {
-        if (!$request->has('sort')) {
-            return;
-        }
-
-        collect($request->input('sort'))->each(function ($sort) use ($builder) {
-            $field = $sort['id'];
-            if (!in_array($field, ['id', 'email', 'plan_id', 'group_id', 'banned', 'is_admin', 'is_staff',
-                'transfer_enable', 'u', 'd', 'total_used', 'expired_at', 'created_at', 'updated_at',
-                'last_login_at', 'speed_limit', 'device_limit'], true)) {
-                return;
-            }
-            $direction = $sort['desc'] ? 'DESC' : 'ASC';
-            $builder->orderBy($field, $direction);
-        });
-    }
-
-    // Resolve bulk operation scope and normalize user_ids.
-    private function resolveScope(Request $request): array
-    {
-        $scope = $request->input('scope');
-        $userIds = $request->input('user_ids');
-
-        $hasSelection = is_array($userIds) && count(array_filter($userIds, static fn($v) => is_numeric($v))) > 0;
-        $hasFilter = $request->has('filter') && !empty($request->input('filter'));
-
-        if (!in_array($scope, ['selected', 'filtered', 'all'], true)) {
-            if ($hasSelection) {
-                $scope = 'selected';
-            } elseif ($hasFilter) {
-                $scope = 'filtered';
-            } else {
-                $scope = 'all';
-            }
-        }
-
-        $normalizedIds = [];
-        if ($scope === 'selected') {
-            $normalizedIds = is_array($userIds) ? $userIds : [];
-            $normalizedIds = array_values(array_unique(array_map(static function ($v) {
-                return is_numeric($v) ? (int) $v : null;
-            }, $normalizedIds)));
-            $normalizedIds = array_values(array_filter($normalizedIds, static fn($v) => is_int($v)));
-        }
-
-        return [
-            'scope' => $scope,
-            'user_ids' => $normalizedIds,
-        ];
-    }
-
-    // Fetch paginated user list (filters + sorting).
-    public function fetch(Request $request)
-    {
-        $current = $request->input('current', 1);
-        $pageSize = $request->input('pageSize', 10);
-
-        $userModel = User::query()
-            ->with(['plan:id,name', 'group:id,name'])
-            ->select((new User())->getTable() . '.*')
-            ->selectRaw('(u + d) as total_used');
-
-        $userModel = HookManager::filter('admin.user.fetch.query', $userModel, $request);
-
-        $this->applyFiltersAndSorts($request, $userModel);
-
-        $users = $userModel->orderBy('id', 'desc')
-            ->paginate($pageSize, ['*'], 'page', $current);
-
-        $users->getCollection()->transform(function ($user): array {
-            return self::transformUserData($user);
-        });
-
+        $query = $this->memberQuery($request)->with('servers:id');
+        $users = $query->orderByDesc('id')->paginate($request->integer('pageSize', 20), ['*'], 'page', $request->integer('current', 1));
+        $users->getCollection()->transform(fn (User $user) => self::transformUserData($user));
         return $this->paginate($users);
     }
 
-    // Transform user fields for API response.
+    private function memberQuery(Request $request): Builder
+    {
+        $query = User::where('is_admin', false);
+        if ($request->filled('search')) {
+            $term = trim((string) $request->input('search'));
+            $query->where(fn (Builder $q) => $q->where('name', 'like', '%' . $term . '%')
+                ->orWhere('email', 'like', '%' . User::normalizeEmail($term) . '%'));
+        }
+        if ($request->has('banned') && $request->input('banned') !== null) {
+            $query->where('banned', $request->boolean('banned'));
+        }
+        return $query;
+    }
+
     public static function transformUserData(User $user): array
     {
-        $model = $user;
-        $user = $user->toArray();
-        $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
-        return HookManager::filter('admin.user.transform', $user, $model);
+        $data = $user->only([
+            'id', 'name', 'email', 'token', 'uuid', 'banned', 'transfer_enable', 'u', 'd',
+            'legacy_u', 'legacy_d', 'speed_limit', 'device_limit', 'expired_at', 'access_mode',
+            'remarks', 'created_at', 'updated_at', 'last_reset_at', 'reset_count',
+        ]);
+        $data['subscribe_url'] = Helper::getSubscribeUrl($user->token);
+        $data['total_used'] = $user->getTotalUsedTraffic();
+        $data['remaining_traffic'] = $user->getRemainingTraffic();
+        $data['actual_u'] = $user->getActualUpload();
+        $data['actual_d'] = $user->getActualDownload();
+        $data['eligible'] = $user->isAvailable();
+        $data['server_ids'] = $user->servers->pluck('id')->map(fn ($id) => (int) $id)->values()->all();
+        return $data;
     }
 
     public function getUserInfoById(Request $request)
     {
-        $request->validate([
-            'id' => 'required|numeric'
-        ], [
-            'id.required' => '用户ID不能为空'
-        ]);
-        $user = User::findOrFail($request->input('id'));
-        $user = HookManager::filter('admin.user.detail', $user, $request);
-        return $this->success($user);
-    }
-
-    public function update(UserUpdate $request)
-    {
-        $params = $request->validated();
-
-        $user = User::find($request->input('id'));
-        if (!$user) {
-            return $this->fail([400202, '用户不存在']);
-        }
-        if (isset($params['email'])) {
-            $existingUser = User::byEmail($params['email'])->first();
-            if ($existingUser && $existingUser->id !== $user->id) {
-                return $this->fail([400201, '邮箱已被使用']);
-            }
-        }
-        // 处理密码
-        if (isset($params['password'])) {
-            $params['password'] = password_hash($params['password'], PASSWORD_DEFAULT);
-            $params['password_algo'] = NULL;
-        } else {
-            unset($params['password']);
-        }
-        // 处理订阅计划
-        if (isset($params['plan_id']) && (int) $params['plan_id'] !== (int) $user->plan_id) {
-            $plan = Plan::find($params['plan_id']);
-            if (!$plan) {
-                return $this->fail([400202, '订阅计划不存在']);
-            }
-            $params['group_id'] = $plan->group_id;
-        }
-        if (isset($params['banned']) && (int) $params['banned'] === 1) {
-            $authService = new AuthService($user);
-            $authService->removeAllSessions();
-        }
-        $params = HookManager::filter('admin.user.update.params', $params, $request, $user);
-
-        HookManager::call('admin.user.update.before', [
-            'user' => $user,
-            'params' => $params,
-            'request' => $request,
-        ]);
-
-        try {
-            $user->update($params);
-        } catch (\Exception $e) {
-            Log::error($e);
-            return $this->fail([500, '保存失败']);
-        }
-
-        HookManager::call('admin.user.update.after', [
-            'user' => $user->refresh(),
-            'params' => $params,
-            'request' => $request,
-        ]);
-
-        return $this->success(true);
-    }
-
-    // Export users to CSV.
-    public function dumpCSV(Request $request)
-    {
-        ini_set('memory_limit', '-1');
-        gc_enable(); // 启用垃圾回收
-
-        $scopeInfo = $this->resolveScope($request);
-        $scope = $scopeInfo['scope'];
-        $userIds = $scopeInfo['user_ids'];
-
-        if ($scope === 'selected') {
-            if (empty($userIds)) {
-                return $this->fail([422, 'user_ids不能为空']);
-            }
-        }
-
-        // 优化查询：使用with预加载plan关系，避免N+1问题
-        $query = User::query()
-            ->with('plan:id,name')
-            ->orderBy('id', 'asc')
-            ->select([
-                'email',
-                'transfer_enable',
-                'u',
-                'd',
-                'expired_at',
-                'token',
-                'plan_id'
-            ]);
-
-        if ($scope === 'selected') {
-            $query->whereIn('id', $userIds);
-        } elseif ($scope === 'filtered') {
-            $this->applyFiltersAndSorts($request, $query);
-        } // all: ignore filter/sort
-
-        $filename = 'users_' . date('Y-m-d_His') . '.csv';
-
-        return response()->streamDownload(function () use ($query) {
-            // 打开输出流
-            $output = fopen('php://output', 'w');
-
-            // 添加BOM标记，确保Excel正确显示中文
-            fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-
-            // 写入CSV头部
-            fputcsv($output, [
-                '邮箱',
-                '总流量',
-                '剩余流量',
-                '成员到期时间',
-                '内部配置',
-                '订阅地址'
-            ]);
-
-            // 分批处理数据以减少内存使用
-            $query->chunk(500, function ($users) use ($output) {
-                foreach ($users as $user) {
-                    try {
-                        $row = [
-                            $user->email,
-                            Helper::trafficConvert($user->transfer_enable),
-                            Helper::trafficConvert($user->transfer_enable - ($user->u + $user->d)),
-                            $user->expired_at ? date('Y-m-d H:i:s', $user->expired_at) : '长期有效',
-                            $user->plan ? $user->plan->name : '无订阅',
-                            Helper::getSubscribeUrl($user->token)
-                        ];
-                        fputcsv($output, $row);
-                    } catch (\Exception $e) {
-                        Log::error('CSV导出错误: ' . $e->getMessage(), [
-                            'user_id' => $user->id,
-                            'email' => $user->email
-                        ]);
-                        continue; // 继续处理下一条记录
-                    }
-                }
-
-                // 清理内存
-                gc_collect_cycles();
-            });
-
-            fclose($output);
-        }, $filename, [
-            'Content-Type' => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => 'attachment; filename="' . $filename . '"'
-        ]);
+        $request->validate(['id' => 'required|integer']);
+        return $this->success(self::transformUserData(User::where('is_admin', false)->findOrFail($request->integer('id'))));
     }
 
     public function create(UserCreate $request)
     {
-        $user = DB::transaction(function () use ($request) {
-            $user = app(UserService::class)->createUser($request->validated());
-            $user->save();
-            return $user;
+        $member = DB::transaction(function () use ($request) {
+            $service = app(UserService::class);
+            $member = $service->createUser($request->validated());
+            $member->save();
+            $service->syncServerAccess($member, $request->input('server_ids', []));
+            return $member;
         });
-
-        return $this->success(self::transformUserData($user->refresh()));
+        return $this->success(self::transformUserData($member->refresh()));
     }
 
-    public function generate(UserGenerate $request)
+    public function update(UserUpdate $request)
     {
-        if ($request->input('email_prefix')) {
-            // If generate_count is specified with email_prefix, generate multiple users with incremented emails
-            if ($request->input('generate_count')) {
-                return $this->multiGenerateWithPrefix($request);
+        $data = $request->validated();
+        $member = DB::transaction(function () use ($data) {
+            $member = User::where('is_admin', false)->lockForUpdate()->findOrFail($data['id']);
+            $hasServerIds = array_key_exists('server_ids', $data);
+            $serverIds = $data['server_ids'] ?? $member->servers()->pluck('v2_server.id')->all();
+            unset($data['id'], $data['server_ids']);
+            $member->fill($data);
+            if (blank($member->name) && blank($member->email)) {
+                throw ValidationException::withMessages(['name' => '请保留成员名称或邮箱']);
             }
-            
-            // Single user generation with email_prefix
-            $email = User::normalizeEmail($request->input('email_prefix') . '@' . $request->input('email_suffix'));
-
-            if (User::byEmail($email)->exists()) {
-                return $this->fail([400201, '邮箱已存在于系统中']);
+            if ($member->access_mode !== 'restricted' && !empty($serverIds) && $hasServerIds) {
+                throw ValidationException::withMessages(['server_ids' => '指定节点时必须使用restricted访问模式']);
             }
-
-            $userService = app(UserService::class);
-            $user = $userService->createUser([
-                'email' => $email,
-                'password' => $request->input('password') ?? $email,
-                'plan_id' => $request->input('plan_id'),
-                'expired_at' => $request->input('expired_at'),
-            ]);
-
-            if (!$user->save()) {
-                return $this->fail([500, '生成失败']);
-            }
-            return $this->success(true);
-        }
-
-        if ($request->input('generate_count')) {
-            return $this->multiGenerate($request);
-        }
-    }
-
-    private function multiGenerate(Request $request)
-    {
-        $userService = app(UserService::class);
-        $usersData = [];
-
-        for ($i = 0; $i < $request->input('generate_count'); $i++) {
-            $email = User::normalizeEmail(Helper::randomChar(6) . '@' . $request->input('email_suffix'));
-            $usersData[] = [
-                'email' => $email,
-                'password' => $request->input('password') ?? $email,
-                'plan_id' => $request->input('plan_id'),
-                'expired_at' => $request->input('expired_at'),
-            ];
-        }
-
-
-
-        try {
-            DB::beginTransaction();
-            $users = [];
-            foreach ($usersData as $userData) {
-                $user = $userService->createUser($userData);
-                $user->save();
-                $users[] = $user;
-            }
-            DB::commit();
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return $this->fail([500, '生成失败']);
-        }
-
-        // 判断是否导出 CSV
-        if ($request->input('download_csv')) {
-            $headers = [
-                'Content-Type' => 'text/csv',
-                'Content-Disposition' => 'attachment; filename="users.csv"',
-            ];
-            $callback = function () use ($users, $request) {
-                $handle = fopen('php://output', 'w');
-                fputcsv($handle, ['账号', '密码', '过期时间', 'UUID', '创建时间', '订阅地址']);
-                foreach ($users as $user) {
-                    $user = $user->refresh();
-                    $expireDate = $user['expired_at'] === NULL ? '长期有效' : date('Y-m-d H:i:s', $user['expired_at']);
-                    $createDate = date('Y-m-d H:i:s', $user['created_at']);
-                    $password = $request->input('password') ?? $user['email'];
-                    $subscribeUrl = Helper::getSubscribeUrl($user['token']);
-                    fputcsv($handle, [$user['email'], $password, $expireDate, $user['uuid'], $createDate, $subscribeUrl]);
-                }
-                fclose($handle);
-            };
-            return response()->streamDownload($callback, 'users.csv', $headers);
-        }
-
-        // 默认返回 JSON
-        $data = collect($users)->map(function ($user) use ($request) {
-            return [
-                'email' => $user['email'],
-                'password' => $request->input('password') ?? $user['email'],
-                'expired_at' => $user['expired_at'] === NULL ? '长期有效' : date('Y-m-d H:i:s', $user['expired_at']),
-                'uuid' => $user['uuid'],
-                'created_at' => date('Y-m-d H:i:s', $user['created_at']),
-                'subscribe_url' => Helper::getSubscribeUrl($user['token']),
-            ];
+            $member->save();
+            app(UserService::class)->syncServerAccess($member, $serverIds);
+            if ($member->banned) $member->tokens()->delete();
+            return $member;
         });
-        return response()->json([
-            'code' => 0,
-            'message' => '批量生成成功',
-            'data' => $data,
-        ]);
-    }
-
-    private function multiGenerateWithPrefix(Request $request)
-    {
-        $userService = app(UserService::class);
-        $usersData = [];
-        $emailPrefix = $request->input('email_prefix');
-        $emailSuffix = $request->input('email_suffix');
-        $generateCount = $request->input('generate_count');
-
-        // Check if any of the emails with prefix already exist
-        for ($i = 1; $i <= $generateCount; $i++) {
-            $email = User::normalizeEmail($emailPrefix . '_' . $i . '@' . $emailSuffix);
-            if (User::byEmail($email)->exists()) {
-                return $this->fail([400201, '邮箱 ' . $email . ' 已存在于系统中']);
-            }
-        }
-
-        // Generate user data for batch creation
-        for ($i = 1; $i <= $generateCount; $i++) {
-            $email = User::normalizeEmail($emailPrefix . '_' . $i . '@' . $emailSuffix);
-            $usersData[] = [
-                'email' => $email,
-                'password' => $request->input('password') ?? $email,
-                'plan_id' => $request->input('plan_id'),
-                'expired_at' => $request->input('expired_at'),
-            ];
-        }
-
-        try {
-            DB::beginTransaction();
-            $users = [];
-            foreach ($usersData as $userData) {
-                $user = $userService->createUser($userData);
-                $user->save();
-                $users[] = $user;
-            }
-            DB::commit();
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return $this->fail([500, '生成失败']);
-        }
-
-        // 判断是否导出 CSV
-        if ($request->input('download_csv')) {
-            $headers = [
-                'Content-Type' => 'text/csv',
-                'Content-Disposition' => 'attachment; filename="users.csv"',
-            ];
-            $callback = function () use ($users, $request) {
-                $handle = fopen('php://output', 'w');
-                fputcsv($handle, ['账号', '密码', '过期时间', 'UUID', '创建时间', '订阅地址']);
-                foreach ($users as $user) {
-                    $user = $user->refresh();
-                    $expireDate = $user['expired_at'] === NULL ? '长期有效' : date('Y-m-d H:i:s', $user['expired_at']);
-                    $createDate = date('Y-m-d H:i:s', $user['created_at']);
-                    $password = $request->input('password') ?? $user['email'];
-                    $subscribeUrl = Helper::getSubscribeUrl($user['token']);
-                    fputcsv($handle, [$user['email'], $password, $expireDate, $user['uuid'], $createDate, $subscribeUrl]);
-                }
-                fclose($handle);
-            };
-            return response()->streamDownload($callback, 'users.csv', $headers);
-        }
-
-        // 默认返回 JSON
-        $data = collect($users)->map(function ($user) use ($request) {
-            return [
-                'email' => $user['email'],
-                'password' => $request->input('password') ?? $user['email'],
-                'expired_at' => $user['expired_at'] === NULL ? '长期有效' : date('Y-m-d H:i:s', $user['expired_at']),
-                'uuid' => $user['uuid'],
-                'created_at' => date('Y-m-d H:i:s', $user['created_at']),
-                'subscribe_url' => Helper::getSubscribeUrl($user['token']),
-            ];
-        });
-        return response()->json([
-            'code' => 0,
-            'message' => '批量生成成功',
-            'data' => $data,
-        ]);
+        return $this->success(self::transformUserData($member->refresh()));
     }
 
     public function ban(Request $request)
     {
-        $scopeInfo = $this->resolveScope($request);
-        $scope = $scopeInfo['scope'];
-        $userIds = $scopeInfo['user_ids'];
+        $data = $request->validate(['id' => 'required|integer', 'banned' => 'required|boolean']);
+        $member = DB::transaction(function () use ($data) {
+            $member = User::where('is_admin', false)->lockForUpdate()->findOrFail($data['id']);
+            $member->update(['banned' => $data['banned']]);
+            if ($member->banned) $member->tokens()->delete();
+            return $member;
+        });
+        return $this->success(self::transformUserData($member->refresh()));
+    }
 
-        if ($scope === 'selected') {
-            if (empty($userIds)) {
-                return $this->fail([422, 'user_ids不能为空']);
-            }
-        }
+    public function resetSecret(Request $request)
+    {
+        $request->validate(['id' => 'required|integer']);
+        $member = DB::transaction(function () use ($request) {
+            $member = User::where('is_admin', false)->lockForUpdate()->findOrFail($request->integer('id'));
+            $member->update(['token' => Helper::guid(), 'uuid' => Helper::guid(true)]);
+            return $member;
+        });
+        return $this->success(self::transformUserData($member->refresh()));
+    }
 
-        $sortType = in_array($request->input('sort_type'), ['ASC', 'DESC']) ? $request->input('sort_type') : 'DESC';
-        $sort = $request->input('sort') ? $request->input('sort') : 'created_at';
-
-        $builder = User::query()->orderBy('id', 'desc');
-
-        if ($scope === 'filtered') {
-            // filtered: keep current semantics
-            $builder->orderBy($sort, $sortType);
-            $this->applyFiltersAndSorts($request, $builder);
-        } elseif ($scope === 'selected') {
-            $builder->whereIn('id', $userIds);
-        } // all: ignore filter/sort
-
-        try {
-            DB::transaction(function () use ($builder): void {
-                $ids = (clone $builder)->reorder()->lockForUpdate()->pluck('id');
-                // Use model events so node_sync receives every member revocation.
-                User::whereIn('id', $ids)->get()->each(fn (User $user) => $user->update(['banned' => true]));
-                foreach ($ids->chunk(500) as $chunk) {
-                    \Laravel\Sanctum\PersonalAccessToken::where('tokenable_type', (new User())->getMorphClass())
-                        ->whereIn('tokenable_id', $chunk)->delete();
-                }
-            });
-        } catch (\Exception $e) {
-            Log::error($e);
-            return $this->fail([500, '处理失败']);
-        }
+    public function destroy(Request $request)
+    {
+        $request->validate(['id' => 'required|integer']);
+        DB::transaction(function () use ($request) {
+            $member = User::where('is_admin', false)->lockForUpdate()->findOrFail($request->integer('id'));
+            $member->tokens()->delete();
+            $member->trafficResetLogs()->delete();
+            $member->stat()->delete();
+            $member->servers()->detach();
+            $member->delete();
+        });
         return $this->success(true);
     }
 
-    // Delete user and related data.
-    public function destroy(Request $request)
+    public function dumpCSV(Request $request)
     {
-        $request->validate([
-            'id' => 'required|exists:App\Models\User,id'
-        ], [
-            'id.required' => '用户ID不能为空',
-            'id.exists' => '用户不存在'
+        $data = $request->validate([
+            'scope' => 'sometimes|in:all,selected',
+            'user_ids' => 'required_if:scope,selected|array|min:1',
+            'user_ids.*' => 'integer|distinct',
+            'search' => 'nullable|string|max:120', 'banned' => 'nullable|boolean',
+            'filter' => 'prohibited',
         ]);
-        $user = User::find($request->input('id'));
-        HookManager::call('admin.user.destroy.before', [
-            'user' => $user,
-            'request' => $request,
-        ]);
-
-        try {
-            DB::beginTransaction();
-            $user->tokens()->delete();
-            $user->trafficResetLogs()->delete();
-            $user->stat()->delete();
-            $user->delete();
-            DB::commit();
-
-            HookManager::call('admin.user.destroy.after', [
-                'user' => $user,
-                'request' => $request,
-            ]);
-
-            return $this->success(true);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error($e);
-            return $this->fail([500, '删除失败']);
-        }
+        $query = $this->memberQuery($request)->with('servers:id')->orderBy('id');
+        if (($data['scope'] ?? 'all') === 'selected') $query->whereIn('id', $data['user_ids']);
+        return response()->streamDownload(function () use ($query) {
+            $out = fopen('php://output', 'w');
+            fwrite($out, "\xEF\xBB\xBF");
+            fputcsv($out, ['id', 'name', 'email', 'banned', 'limit_bytes', 'quota_used_bytes', 'legacy_quota_bytes', 'actual_upload_bytes', 'actual_download_bytes', 'expired_at', 'access_mode', 'server_ids', 'subscribe_url'], escape: '');
+            $query->chunkById(500, function ($members) use ($out) {
+                foreach ($members as $member) {
+                    $safe = fn ($value) => preg_match('/^[=+@\-\t\r]/u', (string) $value) ? "'" . $value : $value;
+                    fputcsv($out, [
+                        $member->id, $safe($member->name), $safe($member->email), (int) $member->banned,
+                        $member->transfer_enable ?? 'unlimited', $member->getTotalUsedTraffic(),
+                        (int) $member->legacy_u + (int) $member->legacy_d,
+                        $member->getActualUpload(), $member->getActualDownload(), $member->expired_at,
+                        $member->access_mode, implode('|', $member->servers->modelKeys()), Helper::getSubscribeUrl($member->token),
+                    ], escape: '');
+                }
+            });
+            fclose($out);
+        }, 'members-' . now()->format('Y-m-d') . '.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
     }
 }

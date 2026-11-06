@@ -40,7 +40,9 @@ return [
             'url' => env('DATABASE_URL'),
             'database' => env('DB_DATABASE') === ':memory:'
                 ? ':memory:'
-                : (env('DB_DATABASE') ? base_path(env('DB_DATABASE')) : database_path('database.sqlite')),
+                : (env('DB_DATABASE')
+                    ? (str_starts_with(env('DB_DATABASE'), '/') ? env('DB_DATABASE') : base_path(env('DB_DATABASE')))
+                    : database_path('database.sqlite')),
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
             'busy_timeout' => env('DB_BUSY_TIMEOUT', 30000),

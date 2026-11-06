@@ -1,14 +1,15 @@
 services:
   xboard:
-    image: ghcr.io/cedar2025/xboard:latest
+    image: ghcr.io/coderdoubleflower/simplexboard:local
+    build:
+      context: .
     restart: unless-stopped
     network_mode: host
     volumes:
       - ./.env:/www/.env
       - ./.docker/.data/:/www/.docker/.data
       - ./storage/logs:/www/storage/logs
-      - ./storage/theme:/www/storage/theme
-      - ./plugins:/www/plugins
+      - ./storage/backup:/www/storage/backup
       - redis-data:/data
     environment:
       - RESOURCE_PROFILE=balanced      # minimal | balanced | performance | auto

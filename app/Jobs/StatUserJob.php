@@ -78,25 +78,23 @@ class StatUserJob implements ShouldQueue
         DB::transaction(function () use ($uid, $v, $recordAt) {
             $existingRecord = StatUser::where([
                 'user_id' => $uid,
-                'server_rate' => $this->server['rate'],
                 'record_at' => $recordAt,
                 'record_type' => $this->recordType,
             ])->first();
 
             if ($existingRecord) {
                 $existingRecord->update([
-                    'u' => $existingRecord->u + intval($v[0] * $this->server['rate']),
-                    'd' => $existingRecord->d + intval($v[1] * $this->server['rate']),
+                    'u' => $existingRecord->u + max(0, (int) $v[0]),
+                    'd' => $existingRecord->d + max(0, (int) $v[1]),
                     'updated_at' => time(),
                 ]);
             } else {
                 StatUser::create([
                     'user_id' => $uid,
-                    'server_rate' => $this->server['rate'],
                     'record_at' => $recordAt,
                     'record_type' => $this->recordType,
-                    'u' => intval($v[0] * $this->server['rate']),
-                    'd' => intval($v[1] * $this->server['rate']),
+                    'u' => max(0, (int) $v[0]),
+                    'd' => max(0, (int) $v[1]),
                     'created_at' => time(),
                     'updated_at' => time(),
                 ]);
@@ -109,15 +107,14 @@ class StatUserJob implements ShouldQueue
         StatUser::upsert(
             [
                 'user_id' => $uid,
-                'server_rate' => $this->server['rate'],
                 'record_at' => $recordAt,
                 'record_type' => $this->recordType,
-                'u' => intval($v[0] * $this->server['rate']),
-                'd' => intval($v[1] * $this->server['rate']),
+                'u' => max(0, (int) $v[0]),
+                'd' => max(0, (int) $v[1]),
                 'created_at' => time(),
                 'updated_at' => time(),
             ],
-            ['user_id', 'server_rate', 'record_at', 'record_type'],
+            ['user_id', 'record_at', 'record_type'],
             [
                 'u' => DB::raw("u + VALUES(u)"),
                 'd' => DB::raw("d + VALUES(d)"),
@@ -133,12 +130,12 @@ class StatUserJob implements ShouldQueue
     {
         $table = (new StatUser())->getTable();
         $now = time();
-        $u = intval($v[0] * $this->server['rate']);
-        $d = intval($v[1] * $this->server['rate']);
+        $u = max(0, (int) $v[0]);
+        $d = max(0, (int) $v[1]);
 
-        $sql = "INSERT INTO {$table} (user_id, server_rate, record_at, record_type, u, d, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (user_id, server_rate, record_at)
+        $sql = "INSERT INTO {$table} (user_id, record_at, record_type, u, d, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (user_id, record_at, record_type)
                 DO UPDATE SET
                     u = {$table}.u + EXCLUDED.u,
                     d = {$table}.d + EXCLUDED.d,
@@ -146,7 +143,6 @@ class StatUserJob implements ShouldQueue
 
         DB::statement($sql, [
             $uid,
-            $this->server['rate'],
             $recordAt,
             $this->recordType,
             $u,

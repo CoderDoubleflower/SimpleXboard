@@ -21,7 +21,9 @@ services:
       - ./.docker/caddy/Caddyfile.split:/etc/caddy/Caddyfile:ro
 
   web:
-    image: ghcr.io/cedar2025/xboard:latest
+    image: ghcr.io/coderdoubleflower/simplexboard:local
+    build:
+      context: .
     restart: unless-stopped
     depends_on:
       - redis
@@ -29,8 +31,7 @@ services:
       - ./.env:/www/.env
       - ./.docker/.data/:/www/.docker/.data
       - ./storage/logs:/www/storage/logs
-      - ./storage/theme:/www/storage/theme
-      - ./plugins:/www/plugins
+      - ./storage/backup:/www/storage/backup
     environment:
       docker: "true"
       ENABLE_CADDY: "false"
@@ -38,7 +39,9 @@ services:
       ENABLE_WS_SERVER: "false"
 
   horizon:
-    image: ghcr.io/cedar2025/xboard:latest
+    image: ghcr.io/coderdoubleflower/simplexboard:local
+    build:
+      context: .
     restart: unless-stopped
     depends_on:
       - redis
@@ -50,7 +53,9 @@ services:
       ENABLE_WS_SERVER: "false"
 
   ws-server:
-    image: ghcr.io/cedar2025/xboard:latest
+    image: ghcr.io/coderdoubleflower/simplexboard:local
+    build:
+      context: .
     restart: unless-stopped
     depends_on:
       - redis

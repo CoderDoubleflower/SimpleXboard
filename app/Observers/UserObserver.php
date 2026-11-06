@@ -4,55 +4,24 @@ namespace App\Observers;
 
 use App\Jobs\NodeUserSyncJob;
 use App\Models\User;
-use App\Services\TrafficResetService;
 
 class UserObserver
 {
-  public function __construct(
-    private readonly TrafficResetService $trafficResetService
-  ) {
-  }
-
-  public function updated(User $user): void
-  {
-    // Capture the old group before Eloquent syncs originals. Queue delivery waits
-    // for commit, so a rolled-back member update can never reach the nodes.
-    $syncFields = ['group_id', 'uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd', 'plan_id'];
-    $needsSync = $user->wasChanged($syncFields);
-    $oldGroupId = $user->wasChanged('group_id') ? $user->getOriginal('group_id') : null;
-
-    if ($user->wasChanged(['plan_id', 'expired_at'])) {
-      $this->recalculateNextResetAt($user);
+    public function updated(User $user): void
+    {
+        if ($user->wasChanged(['uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd', 'access_mode', 'is_admin'])) {
+            NodeUserSyncJob::dispatch($user->id, 'updated', $user->wasChanged('uuid'))->afterCommit();
+        }
     }
 
-    if ($needsSync) {
-      NodeUserSyncJob::dispatch($user->id, 'updated', $oldGroupId)->afterCommit();
+    public function created(User $user): void
+    {
+        NodeUserSyncJob::dispatch($user->id, 'created')->afterCommit();
     }
-  }
 
-  public function created(User $user): void
-  {
-    $this->recalculateNextResetAt($user);
-    NodeUserSyncJob::dispatch($user->id, 'created')->afterCommit();
-  }
-
-  public function deleted(User $user): void
-  {
-    if ($user->group_id) {
-      NodeUserSyncJob::dispatch($user->id, 'deleted', $user->group_id)->afterCommit();
+    public function deleted(User $user): void
+    {
+        // Delete does not depend on an existing pivot or model being present later.
+        NodeUserSyncJob::dispatch($user->id, 'deleted')->afterCommit();
     }
-  }
-
-  /**
-   * 根据当前用户状态重新计算 next_reset_at
-   */
-  private function recalculateNextResetAt(User $user): void
-  {
-    $user->refresh();
-    User::withoutEvents(function () use ($user) {
-      $nextResetTime = $this->trafficResetService->calculateNextResetTime($user);
-      $user->next_reset_at = $nextResetTime?->timestamp;
-      $user->save();
-    });
-  }
 }

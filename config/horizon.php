@@ -1,10 +1,6 @@
 <?php
 
 use Illuminate\Support\Str;
-use Linfo\Linfo;
-
-// $lInfo = new Linfo();
-// $parser = $lInfo->getParser();
 
 return [
 
@@ -198,7 +194,7 @@ return [
             ],
             'notification' => [
                 'connection' => 'redis',
-                'queue' => ['send_email', 'send_telegram', 'node_sync'],
+                'queue' => ['node_sync'],
                 'balance' => 'auto',
                 'autoScalingStrategy' => 'size',
                 'minProcesses' => 1,
@@ -218,8 +214,6 @@ return [
                     'default',
                     'traffic_fetch',
                     'stat',
-                    'send_email',
-                    'send_telegram',
                     'user_alive_sync',
                     'node_sync'
                 ],

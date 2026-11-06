@@ -4,63 +4,49 @@ namespace App\Observers;
 
 use App\Models\Server;
 use App\Services\NodeSyncService;
+use Illuminate\Support\Facades\DB;
 
 class ServerObserver
 {
-    public bool $afterCommit = true;
-
     public function created(Server $server): void
     {
-        $this->notifyMachineNodesChanged($server->machine_id);
+        $machineId = $server->machine_id;
+        DB::afterCommit(function () use ($machineId) {
+            if ($machineId) NodeSyncService::notifyMachineNodesChanged($machineId);
+        });
     }
 
     public function updated(Server $server): void
     {
-        if ($server->wasChanged('group_ids')) {
-            NodeSyncService::notifyFullSync($server->id);
-        } elseif ($server->wasChanged([
-            'server_port',
-            'protocol_settings',
-            'type',
-            'route_ids',
-            'custom_outbounds',
-            'custom_routes',
-            'cert_config',
-        ])) {
-            NodeSyncService::notifyConfigUpdated($server->id);
-        }
-
-        if ($server->wasChanged(['machine_id', 'enabled'])) {
-            $this->notifyMachineChange(
-                $server->machine_id,
-                $server->getOriginal('machine_id')
-            );
-        }
+        // Capture originals before Eloquent replaces them; deliver only after commit.
+        $nodeId = $server->id;
+        $oldLimit = $server->getOriginal('transfer_enable');
+        $oldUsed = (int) $server->getOriginal('u') + (int) $server->getOriginal('d');
+        $wasAvailable = (bool) $server->getOriginal('enabled')
+            && ($oldLimit === null || (int) $oldLimit === 0 || $oldUsed < $oldLimit);
+        $fullSync = $server->wasChanged(['enabled', 'transfer_enable']) || $wasAvailable !== $server->isAvailable();
+        $configChanged = $server->wasChanged([
+            'server_port', 'protocol_settings', 'type', 'route_ids',
+            'custom_outbounds', 'custom_routes', 'cert_config',
+        ]);
+        $machineIds = $server->wasChanged(['machine_id', 'enabled'])
+            ? array_unique(array_filter([$server->machine_id, $server->getOriginal('machine_id')])) : [];
+        DB::afterCommit(function () use ($nodeId, $fullSync, $configChanged, $machineIds) {
+            if ($fullSync) NodeSyncService::notifyFullSync($nodeId);
+            elseif ($configChanged) NodeSyncService::notifyConfigUpdated($nodeId);
+            foreach ($machineIds as $machineId) NodeSyncService::notifyMachineNodesChanged($machineId);
+        });
     }
 
     public function deleted(Server $server): void
     {
-        $this->notifyMachineChange(null, $server->getOriginal('machine_id') ?: $server->machine_id);
-    }
-
-    private function notifyMachineChange(?int $newMachineId, ?int $oldMachineId): void
-    {
-        $notified = [];
-
-        if ($newMachineId) {
-            NodeSyncService::notifyMachineNodesChanged($newMachineId);
-            $notified[] = $newMachineId;
-        }
-
-        if ($oldMachineId && !in_array($oldMachineId, $notified, true)) {
-            NodeSyncService::notifyMachineNodesChanged($oldMachineId);
-        }
-    }
-
-    private function notifyMachineNodesChanged(?int $machineId): void
-    {
-        if ($machineId) {
-            NodeSyncService::notifyMachineNodesChanged($machineId);
-        }
+        $nodeId = $server->id;
+        $machineId = $server->machine_id;
+        DB::afterCommit(function () use ($nodeId, $machineId) {
+            if (NodeSyncService::isNodeOnline($nodeId)) {
+                NodeSyncService::push($nodeId, 'sync.users', ['users' => []]);
+            }
+            if ($machineId) NodeSyncService::notifyMachineNodesChanged($machineId);
+        });
     }
 }

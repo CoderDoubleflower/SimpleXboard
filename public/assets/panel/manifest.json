@@ -1,0 +1,23 @@
+{
+  "version": "5812f11b2ae1c16c",
+  "index.html": {
+    "file": "5812f11b2ae1c16c/app.js",
+    "css": [
+      "5812f11b2ae1c16c/styles.css"
+    ],
+    "isEntry": true
+  },
+  "integrity": {
+    "5812f11b2ae1c16c/api.js": "sha256-Y6pRq81s3HQsRhyLWZWOWa2Q2F1BJwTEzsjBSJsJoJ0=",
+    "5812f11b2ae1c16c/app.js": "sha256-p4vFP5tmd3ZiuM39Ip/Kd9nj01coHKLV20olRakV3z0=",
+    "5812f11b2ae1c16c/domain.js": "sha256-tNDejlw6yE8INwC6pBgdZhQJ5wMHbZcjsrw+Nadmzp4=",
+    "5812f11b2ae1c16c/format.js": "sha256-s2F+Q2Qosn43wzqSBnZPrHShp6Qo8q51S5u1G1ZtsoU=",
+    "5812f11b2ae1c16c/pages/logs.js": "sha256-ynrDnHvAOhqXNOww3+Wb+fPAzlYfJLapOhYFK4xenrg=",
+    "5812f11b2ae1c16c/pages/members.js": "sha256-ArEbFrQJo3By+tLeHNHCgfsP7eDkxUHedQt4K3v9DAI=",
+    "5812f11b2ae1c16c/pages/nodes.js": "sha256-ORaTQ8lYvuONSuiuANNA7/lRia8JYKIdeCfynJ4LbgA=",
+    "5812f11b2ae1c16c/pages/overview.js": "sha256-On9S7i5Envll9stJReZF6zvqZe0jhDM0hcIK86PCLs0=",
+    "5812f11b2ae1c16c/pages/settings.js": "sha256-c2BkByYBuyjxwK1RpkXvVFU3ADKaWFssiK8DNSUw5xY=",
+    "5812f11b2ae1c16c/styles.css": "sha256-TJo4mstYtgIzTbDcYL3fQMZtlYh5OhP4PsQdnzKoCaE=",
+    "5812f11b2ae1c16c/ui.js": "sha256-Ex9u/BqUmtZ0MUGAW74EXXb5UWkjDOvS3JLddNtdgjo="
+  }
+}

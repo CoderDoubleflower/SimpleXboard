@@ -2,20 +2,17 @@
 
 namespace Tests\Feature;
 
-use App\Console\Commands\XboardInstall;
 use App\Jobs\NodeUserSyncJob;
-use App\Models\Plan;
 use App\Models\Server;
-use App\Models\ServerGroup;
 use App\Models\User;
 use App\Services\ServerService;
 use App\Services\TrafficResetService;
 use App\Services\UserService;
+use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -27,278 +24,189 @@ class PrivateMembersTest extends TestCase
     {
         parent::setUp();
         Bus::fake();
-        admin_setting(['server_token' => 'test-node-token', 'show_info_to_server_enable' => 0]);
     }
 
-    public function test_fresh_install_admin_can_create_usable_members_without_orders(): void
+    public function test_admin_creates_named_or_email_members_without_passwords_plans_or_orders(): void
     {
-        $this->assertTrue(XboardInstall::registerAdmin('admin@example.com', 'test-password'));
-        Sanctum::actingAs(User::byEmail('admin@example.com')->first());
-
-        $response = $this->postJson($this->adminPath('user/create'), [
-            'email' => 'Member@EXAMPLE.COM',
-            'password' => 'member-password',
-        ])->assertOk()->assertJsonPath('data.email', 'member@example.com');
-
-        $member = User::byEmail('member@example.com')->firstOrFail();
-        $other = $this->member('other@example.com');
-        $this->assertTrue($member->isAvailable());
-        $this->assertSame(1024 * 1073741824, $member->transfer_enable);
-        $this->assertNull($member->expired_at);
-        $this->assertNotEmpty($member->next_reset_at);
-        $this->assertNotSame($member->uuid, $other->uuid);
-        $this->assertNotSame($member->token, $other->token);
-        $this->assertDatabaseCount('v2_order', 0);
-        $response->assertJsonMissingPath('data.password')->assertJsonMissingPath('data.balance');
-        Bus::assertDispatched(NodeUserSyncJob::class);
-    }
-
-    public function test_member_creation_requires_an_admin_and_positive_quota(): void
-    {
-        Sanctum::actingAs($this->member());
-        $data = ['email' => 'new@example.com', 'password' => 'member-password'];
-        $this->postJson($this->adminPath('user/create'), $data)->assertForbidden();
-
         $this->asAdmin();
-        $this->postJson($this->adminPath('user/create'), $data + ['transfer_enable' => 0])
+        $named = $this->postJson($this->path('user/create'), ['name' => 'Family'])->assertOk()
+            ->assertJsonPath('data.name', 'Family')->assertJsonPath('data.email', null)
+            ->assertJsonPath('data.transfer_enable', null)->assertJsonPath('data.access_mode', 'all')
+            ->assertJsonPath('data.eligible', true)->assertJsonPath('data.server_ids', [])
+            ->assertJsonMissingPath('data.password')->assertJsonMissingPath('data.plan_id');
+        $email = $this->postJson($this->path('user/create'), ['email' => '  FRIEND@Example.com  '])
+            ->assertOk()->assertJsonPath('data.email', 'friend@example.com');
+        $first = User::findOrFail($named->json('data.id'));
+        $second = User::findOrFail($email->json('data.id'));
+        $this->assertNull($first->password);
+        $this->assertNull($second->password);
+        $this->assertNull($first->expired_at);
+        $this->assertNotSame($first->uuid, $second->uuid);
+        $this->assertNotSame($first->token, $second->token);
+        foreach (['v2_plan', 'v2_server_group', 'v2_order'] as $table) $this->assertFalse(Schema::hasTable($table));
+        Bus::assertDispatched(NodeUserSyncJob::class, fn ($job) => $job->afterCommit === true);
+    }
+
+    public function test_member_validation_keeps_zero_closed_and_protects_identity_and_admin_fields(): void
+    {
+        $this->asAdmin();
+        $this->postJson($this->path('user/create'), [])->assertUnprocessable();
+        $this->postJson($this->path('user/create'), ['name' => 'negative', 'transfer_enable' => -1])->assertUnprocessable();
+        $this->postJson($this->path('user/create'), ['name' => 'portal', 'password' => 'not-allowed'])->assertUnprocessable();
+        $this->postJson($this->path('user/create'), ['name' => 'role', 'is_admin' => true])->assertUnprocessable();
+        $response = $this->postJson($this->path('user/create'), ['name' => 'Zero', 'transfer_enable' => 0])
+            ->assertOk()->assertJsonPath('data.eligible', false)->assertJsonPath('data.remaining_traffic', 0);
+        $this->postJson($this->path('user/update'), ['id' => $response->json('data.id'), 'name' => null])
             ->assertUnprocessable();
-        $this->postJson($this->adminPath('user/create'), $data + ['plan_id' => 999999])
-            ->assertUnprocessable();
-        $this->assertDatabaseMissing('v2_user', ['email' => 'new@example.com']);
+        $this->postJson($this->path('user/update'), ['id' => $response->json('data.id'), 'transfer_enable' => null])
+            ->assertOk()->assertJsonPath('data.eligible', true)->assertJsonPath('data.remaining_traffic', null);
     }
 
-    public function test_legacy_admin_generation_uses_default_configuration_without_purchase(): void
+    public function test_subscription_full_node_pull_and_model_share_every_quota_boundary(): void
+    {
+        $visible = $this->node();
+        $hidden = $this->node(['name' => 'Hidden', 'show' => false]);
+        $disabled = $this->node(['name' => 'Disabled', 'enabled' => false]);
+        $fullNode = $this->node(['name' => 'Full', 'transfer_enable' => 10, 'u' => 10]);
+        $cases = [
+            [['transfer_enable' => null, 'u' => 1000, 'd' => 9000], true],
+            [['transfer_enable' => 0], false],
+            [['transfer_enable' => 100, 'u' => 49, 'd' => 50], true],
+            [['transfer_enable' => 100, 'u' => 50, 'd' => 50], false],
+            [['transfer_enable' => 100, 'u' => 101], false],
+            [['expired_at' => time() - 1], false],
+            [['banned' => true], false],
+            [['is_admin' => true], false],
+        ];
+        foreach ($cases as [$attributes, $expected]) {
+            $member = $this->member($attributes);
+            $this->assertSame($expected, $member->isAvailable());
+            $this->assertSame($expected, app(UserService::class)->isAvailable($member));
+            $this->assertSame($expected, User::eligible()->whereKey($member->id)->exists());
+            $this->assertSame($expected, ServerService::getAvailableUsers($visible)->contains('id', $member->id));
+            $this->assertSame($expected, ServerService::getAvailableUsers($hidden)->contains('id', $member->id));
+            $this->assertSame([], ServerService::getAvailableUsers($disabled)->all());
+            $this->assertSame([], ServerService::getAvailableUsers($fullNode)->all());
+            $this->assertSame($expected ? [$visible->id] : [], array_column(ServerService::getAvailableServers($member), 'id'));
+        }
+    }
+
+    public function test_direct_access_is_bidirectional_and_all_does_not_depend_on_visibility(): void
+    {
+        $a = $this->node(['name' => 'A']);
+        $b = $this->node(['name' => 'B']);
+        $hidden = $this->node(['name' => 'Hidden', 'show' => false]);
+        $member = $this->member(['access_mode' => 'restricted']);
+        $member->servers()->sync([$a->id, $hidden->id]);
+        $this->assertSame([$a->id], array_column(ServerService::getAvailableServers($member), 'id'));
+        $this->assertTrue(ServerService::getAvailableUsers($a)->contains('id', $member->id));
+        $this->assertTrue(ServerService::getAvailableUsers($hidden)->contains('id', $member->id));
+        $this->assertFalse(ServerService::getAvailableUsers($b)->contains('id', $member->id));
+        $member->update(['access_mode' => 'all']);
+        $this->assertSame([$a->id, $b->id], array_column(ServerService::getAvailableServers($member), 'id'));
+        $this->assertTrue(ServerService::getAvailableUsers($b)->contains('id', $member->id));
+    }
+
+    public function test_admin_updates_direct_access_and_no_admin_is_editable_through_member_actions(): void
+    {
+        $admin = $this->asAdmin();
+        $member = $this->member();
+        $node = $this->node();
+        $this->postJson($this->path('user/update'), [
+            'id' => $member->id, 'access_mode' => 'restricted', 'server_ids' => [$node->id],
+        ])->assertOk()->assertJsonPath('data.server_ids', [$node->id]);
+        $this->postJson($this->path('user/update'), [
+            'id' => $member->id, 'server_ids' => [],
+        ])->assertOk()->assertJsonPath('data.server_ids', []);
+        $this->assertSame([], ServerService::getAvailableServers($member->fresh()));
+        $this->getJson($this->path('user/fetch'))->assertOk()->assertJsonPath('total', 1)
+            ->assertJsonPath('data.0.id', $member->id);
+        foreach (['user/update', 'user/ban', 'user/resetSecret', 'user/destroy'] as $action) {
+            $this->postJson($this->path($action), ['id' => $admin->id, 'banned' => true])->assertNotFound();
+        }
+        $this->assertTrue($admin->fresh()->is_admin);
+        $this->assertFalse($admin->fresh()->banned);
+    }
+
+    public function test_disable_rotation_and_deletion_keep_subscription_identity_lifecycle_consistent(): void
     {
         $this->asAdmin();
-        $this->postJson($this->adminPath('user/generate'), [
-            'email_prefix' => 'friend', 'email_suffix' => 'example.com',
-            'password' => 'friend-password',
-        ])->assertOk();
-        $this->assertTrue(User::byEmail('friend@example.com')->firstOrFail()->isAvailable());
-        $this->assertDatabaseCount('v2_order', 0);
-    }
-
-    public function test_upgrade_preserves_existing_credentials_quotas_and_node_scope(): void
-    {
-        $legacyGroup = new ServerGroup();
-        $legacyGroup->name = 'legacy';
-        $legacyGroup->save();
-        $legacyPlan = Plan::create([
-            'name' => 'legacy', 'group_id' => $legacyGroup->id, 'transfer_enable' => 40,
-            'reset_traffic_method' => Plan::RESET_TRAFFIC_NEVER,
-        ]);
-        $member = app(UserService::class)->createUser([
-            'email' => 'legacy@example.com', 'plan_id' => $legacyPlan->id,
-            'expired_at' => time() + 86400,
-        ]);
-        $member->save();
-        $node = $this->node($legacyGroup->id);
-        $before = $member->getAttributes();
-
-        $migration = require base_path('database/migrations/2026_11_06_000001_prepare_private_members.php');
-        $migration->up();
-
-        $this->assertSame($before, $member->fresh()->getAttributes());
-        $this->assertSame([$node->id], array_column(ServerService::getAvailableServers($member), 'id'));
-        $this->assertCount(1, ServerService::getAvailableUsers($node));
-        $this->assertSame(1, Plan::where('is_internal', true)->count());
-
-        // Editing an unrelated field must not repair/reassign a legacy group silently.
-        $member->group_id = Plan::internalDefault()->group_id;
-        $member->save();
-        $this->asAdmin();
-        $this->postJson($this->adminPath('user/update'), [
-            'id' => $member->id, 'plan_id' => $legacyPlan->id, 'remarks' => 'retained',
-        ])->assertOk();
-        $this->assertSame(Plan::internalDefault()->group_id, $member->fresh()->group_id);
-    }
-
-    public function test_long_lived_internal_members_reset_monthly_without_changing_legacy_lifetime_plans(): void
-    {
         $member = $this->member();
-        $service = app(TrafficResetService::class);
-        $next = $service->calculateNextResetTime($member);
-        $this->assertSame(now()->addMonth()->startOfMonth()->timestamp, $next->timestamp);
-
-        $member->update(['u' => 123, 'd' => 456]);
-        $this->assertTrue($service->manualReset($member));
-        $this->assertSame(0, $member->fresh()->getTotalUsedTraffic());
-        $this->assertDatabaseHas('v2_traffic_reset_logs', ['user_id' => $member->id, 'old_total' => 579]);
-
-        $plan = Plan::create([
-            'name' => 'legacy lifetime', 'group_id' => $member->group_id, 'transfer_enable' => 5,
-            'reset_traffic_method' => Plan::RESET_TRAFFIC_FIRST_DAY_MONTH,
-        ]);
-        $member->plan_id = $plan->id;
-        $member->unsetRelation('plan');
-        $this->assertNull($service->calculateNextResetTime($member));
-    }
-
-    public function test_ban_unban_and_secret_reset_reach_node_sync_and_revoke_subscription(): void
-    {
-        $member = $this->member();
-        $node = $this->node($member->group_id);
         $oldToken = $member->token;
         $oldUuid = $member->uuid;
-        $member->createToken('member');
-        $this->asAdmin();
-        Bus::fake();
-
-        $this->postJson($this->adminPath('user/ban'), ['scope' => 'selected', 'user_ids' => [$member->id]])
-            ->assertOk();
-        $this->assertTrue($member->fresh()->banned);
-        $this->assertCount(0, ServerService::getAvailableUsers($node));
-        $this->assertSame(0, $member->tokens()->count());
+        $this->postJson($this->path('user/ban'), ['id' => $member->id, 'banned' => true])
+            ->assertOk()->assertJsonPath('data.eligible', false);
+        $this->postJson($this->path('user/ban'), ['id' => $member->id, 'banned' => false])
+            ->assertOk()->assertJsonPath('data.eligible', true);
+        $response = $this->postJson($this->path('user/resetSecret'), ['id' => $member->id])->assertOk();
+        $this->assertNotSame($oldToken, $response->json('data.token'));
+        $this->assertNotSame($oldUuid, $response->json('data.uuid'));
+        $this->assertNull(User::where('token', $oldToken)->first());
+        $this->postJson($this->path('user/destroy'), ['id' => $member->id])->assertOk();
+        $this->assertNull(User::find($member->id));
         Bus::assertDispatched(NodeUserSyncJob::class, fn ($job) => $job->afterCommit === true);
-        $this->get('/s/' . $oldToken)->assertForbidden();
+    }
 
+    public function test_manual_reset_recovers_a_hard_limit_without_reclassifying_legacy_bytes(): void
+    {
+        $member = $this->member(['transfer_enable' => 100, 'u' => 80, 'd' => 20, 'legacy_u' => 50, 'legacy_d' => 20]);
+        $this->assertFalse($member->isAvailable());
+        $this->assertSame(30, $member->getActualUpload());
+        $this->assertSame(0, $member->getActualDownload());
+        $this->assertTrue(app(TrafficResetService::class)->manualReset($member, ['reason' => 'manual allowance reset']));
+        $this->assertTrue($member->isAvailable());
+        $this->assertSame(0, $member->getTotalUsedTraffic());
+        $this->assertSame(0, $member->legacy_u);
+        $this->assertDatabaseHas('v2_traffic_reset_logs', ['user_id' => $member->id, 'old_total' => 100, 'reset_type' => 'manual']);
+        $this->assertSame(50, $member->trafficResetLogs()->first()->metadata['legacy_upload']);
+    }
+
+    public function test_export_and_search_do_not_expose_login_secrets_or_legacy_roles(): void
+    {
         $this->asAdmin();
-        $this->postJson($this->adminPath('user/update'), ['id' => $member->id, 'banned' => false])->assertOk();
-        $this->assertCount(1, ServerService::getAvailableUsers($node));
-        $this->postJson($this->adminPath('user/resetSecret'), ['id' => $member->id])->assertOk();
-        $member->refresh();
-        $this->assertNotSame($oldToken, $member->token);
-        $this->assertNotSame($oldUuid, $member->uuid);
-        $this->get('/s/' . $oldToken)->assertForbidden();
-        $this->get('/s/' . $member->token)->assertOk();
-        $this->assertSame($member->uuid, ServerService::getAvailableUsers($node)->first()->uuid);
+        $member = $this->member(['name' => '=Shared', 'transfer_enable' => null]);
+        $this->getJson($this->path('user/fetch') . '?search=Shared')->assertOk()->assertJsonPath('total', 1)
+            ->assertJsonMissingPath('data.0.password')->assertJsonMissingPath('data.0.plan_id')
+            ->assertJsonMissingPath('data.0.is_staff');
+        $response = $this->postJson($this->path('user/dumpCSV'), ['scope' => 'selected', 'user_ids' => [$member->id]])->assertOk();
+        $csv = $response->streamedContent();
+        $this->assertStringContainsString("'=Shared", $csv);
+        $this->assertStringContainsString('unlimited', $csv);
+        $this->assertStringContainsString(Helper::getSubscribeUrl($member->token), $csv);
+        $this->assertStringNotContainsString('password', $csv);
+        $this->postJson($this->path('user/generate'), ['generate_count' => 3])->assertNotFound();
     }
 
-    public function test_group_change_sends_removal_to_old_nodes_and_addition_to_new_nodes(): void
+    private function member(array $attributes = []): User
     {
-        $member = $this->member();
-        $oldNode = $this->node($member->group_id);
-        $group = new ServerGroup();
-        $group->name = 'new group';
-        $group->save();
-        $newNode = $this->node($group->id);
-        Cache::put('node_ws_alive:' . $oldNode->id, true);
-        Cache::put('node_ws_alive:' . $newNode->id, true);
-        Bus::fake();
-
-        DB::transaction(fn () => $member->update(['group_id' => $group->id]));
-
-        $messages = [];
-        Redis::shouldReceive('publish')->twice()->withArgs(function ($channel, $json) use (&$messages) {
-            $messages[] = json_decode($json, true);
-            return $channel === 'node:push';
-        })->andReturn(1);
-        Bus::assertDispatched(NodeUserSyncJob::class, function ($job) {
-            $job->handle();
-            return true;
-        });
-        $this->assertSame($oldNode->id, $messages[0]['node_id']);
-        $this->assertSame('remove', $messages[0]['data']['action']);
-        $this->assertSame($newNode->id, $messages[1]['node_id']);
-        $this->assertSame('add', $messages[1]['data']['action']);
+        $member = app(UserService::class)->createUser(['name' => 'Member ' . Helper::randomChar(6)]);
+        $member->fill($attributes);
+        $member->save();
+        return $member;
     }
 
-    public function test_optional_commerce_cleanup_keeps_core_management_and_subscriptions_usable(): void
+    private function asAdmin(): User
     {
-        $member = $this->member();
-        $this->node($member->group_id);
-        $identity = [$member->token, $member->uuid, $member->plan_id, $member->group_id];
-        $migration = require base_path('database/cleanup/2026_11_06_000001_remove_retired_commerce.php');
-        $migration->up();
-
-        $this->asAdmin();
-        $this->getJson($this->adminPath('user/fetch'))->assertOk();
-        $this->getJson($this->adminPath('plan/fetch'))->assertOk();
-        $this->getJson($this->adminPath('stat/getOverride'))->assertOk();
-        $this->getJson($this->adminPath('stat/getStats'))->assertOk();
-        $this->postJson($this->adminPath('user/create'), [
-            'email' => 'after-cleanup@example.com', 'password' => 'member-password',
-        ])->assertOk();
-
-        Sanctum::actingAs($member);
-        $this->getJson('/api/v1/user/info')->assertOk();
-        $this->getJson('/api/v1/user/getStat')->assertOk()->assertJsonPath('data', [0, 0, 0]);
-        $this->getJson('/api/v1/user/getSubscribe')->assertOk();
-        $this->get('/s/' . $member->token)->assertOk();
-        $member->refresh();
-        $this->assertSame($identity, [$member->token, $member->uuid, $member->plan_id, $member->group_id]);
-        $this->assertFalse(\Illuminate\Support\Facades\Schema::hasTable('v2_order'));
-    }
-
-    public function test_retired_filters_cannot_expand_a_bulk_ban_to_all_members(): void
-    {
-        $member = $this->member();
-        $other = $this->member('other@example.com');
-        $member->createToken('member');
-        $this->asAdmin();
-
-        $this->postJson($this->adminPath('user/ban'), [
-            'scope' => 'filtered',
-            'filter' => [['id' => 'balance', 'value' => '>100']],
-        ])->assertUnprocessable();
-
-        $this->assertFalse($member->fresh()->banned);
-        $this->assertFalse($other->fresh()->banned);
-        $this->assertSame(1, $member->tokens()->count());
-    }
-
-    public function test_internal_configuration_survives_migration_rollback_and_reapply(): void
-    {
-        $member = $this->member();
-        $planId = $member->plan_id;
-        $groupId = $member->group_id;
-        $migration = require base_path('database/migrations/2026_11_06_000001_prepare_private_members.php');
-        $migration->down();
-        $migration->up();
-
-        $this->assertSame($planId, Plan::internalDefault()->id);
-        $this->assertSame($groupId, Plan::internalDefault()->group_id);
-        $this->assertSame(1, Plan::where('is_internal', true)->count());
-        $this->assertNotNull(app(TrafficResetService::class)->calculateNextResetTime($member->fresh()));
-    }
-
-    public function test_force_updating_a_configuration_keeps_omitted_speed_and_device_limits(): void
-    {
-        $plan = Plan::internalDefault();
-        $plan->update(['speed_limit' => 10, 'device_limit' => 2]);
-        $member = $this->member();
-        $this->asAdmin();
-
-        $this->postJson($this->adminPath('plan/save'), [
-            'id' => $plan->id, 'name' => $plan->name, 'group_id' => $plan->group_id,
-            'transfer_enable' => 128, 'force_update' => true,
-        ])->assertOk();
-
-        $member->refresh();
-        $this->assertSame(128 * 1073741824, $member->transfer_enable);
-        $this->assertSame(10, $member->speed_limit);
-        $this->assertSame(2, $member->device_limit);
-        $this->assertSame(10, $plan->fresh()->speed_limit);
-    }
-
-    private function member(string $email = 'member@example.com'): User
-    {
-        $user = app(UserService::class)->createUser(['email' => $email, 'password' => 'member-password']);
-        $user->save();
-        return $user->refresh();
-    }
-
-    private function asAdmin(): void
-    {
-        if (!User::byEmail('admin@example.com')->exists()) {
-            XboardInstall::registerAdmin('admin@example.com', 'test-password');
-        }
-        $admin = User::byEmail('admin@example.com')->firstOrFail();
-        Sanctum::actingAs($admin);
-    }
-
-    private function adminPath(string $path): string
-    {
-        return '/api/v2/' . hash('crc32b', config('app.key')) . '/' . $path;
-    }
-
-    private function node(int $groupId): Server
-    {
-        return Server::create([
-            'name' => 'private node', 'type' => Server::TYPE_VLESS,
-            'host' => 'node.example.com', 'port' => 443, 'server_port' => 443,
-            'rate' => '1', 'group_ids' => [(string) $groupId], 'show' => true, 'enabled' => true,
-            'protocol_settings' => ['tls' => 0, 'network' => 'tcp'],
+        $admin = new User([
+            'email' => 'admin@example.com', 'name' => 'Administrator', 'is_admin' => true,
+            'password' => password_hash('admin-password', PASSWORD_DEFAULT), 'uuid' => Helper::guid(true), 'token' => Helper::guid(),
         ]);
+        $admin->save();
+        Sanctum::actingAs($admin);
+        return $admin;
+    }
+
+    private function node(array $attributes = []): Server
+    {
+        return Server::create($attributes + [
+            'name' => 'Visible', 'type' => 'vless', 'host' => 'node.example.test',
+            'port' => '443', 'server_port' => 443, 'show' => true, 'enabled' => true,
+            'protocol_settings' => ['tls' => 2, 'network' => 'tcp'],
+        ]);
+    }
+
+    private function path(string $path): string
+    {
+        return '/api/v2/' . admin_setting('secure_path', hash('crc32b', config('app.key'))) . '/' . $path;
     }
 }

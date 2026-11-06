@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use App\Services\Plugin\HookManager;
 
 abstract class AbstractProtocol
 {
@@ -63,7 +62,7 @@ abstract class AbstractProtocol
         $this->clientVersion = $clientVersion;
         $this->userAgent = $userAgent;
         $this->protocolRequirements = $this->normalizeProtocolRequirements($this->protocolRequirements);
-        $this->servers = HookManager::filter('protocol.servers.filtered', $this->filterServersByVersion());
+        $this->servers = $this->filterServersByVersion();
     }
 
     /**
@@ -262,5 +261,18 @@ abstract class AbstractProtocol
             $result[$client][$type][$field] = $value;
         }
         return $result;
+    }
+
+    /** Unlimited quota and permanent validity omit the respective optional fields. */
+    protected function subscriptionUserInfo(): string
+    {
+        $data = ['upload' => (int) $this->user['u'], 'download' => (int) $this->user['d']];
+        if ($this->user['transfer_enable'] !== null) {
+            $data['total'] = (int) $this->user['transfer_enable'];
+        }
+        if ($this->user['expired_at'] !== null) {
+            $data['expire'] = (int) $this->user['expired_at'];
+        }
+        return implode('; ', array_map(fn ($key, $value) => $key . '=' . $value, array_keys($data), $data));
     }
 }

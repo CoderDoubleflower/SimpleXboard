@@ -1,0 +1,74 @@
+{
+  "status": "passed",
+  "scope": "Real HTTP, Redis, queue worker and Workerman protocol; no VPS data-plane connection",
+  "checks": [
+    {
+      "check": "HTTP handshake and real WebSocket full sync",
+      "latency_ms": 231.0
+    },
+    {
+      "check": "Create member via HTTP and deliver queue delta",
+      "latency_ms": 575.2
+    },
+    {
+      "check": "Update member through real worker and Redis",
+      "latency_ms": 3005.6
+    },
+    {
+      "check": "Credential rotation removes old identity before adding new",
+      "latency_ms": 2898.2
+    },
+    {
+      "check": "Disable member on all connected nodes",
+      "latency_ms": 2899.1
+    },
+    {
+      "check": "Reconnect keeps disabled member revoked",
+      "latency_ms": 3.3
+    },
+    {
+      "check": "Re-enable member without changing identity",
+      "latency_ms": 2902.3
+    },
+    {
+      "check": "Direct access changes revoke nodes outside current grant",
+      "latency_ms": 3007.1
+    },
+    {
+      "check": "Restore shared enabled-node access",
+      "latency_ms": 3008.0
+    },
+    {
+      "check": "Set positive hard usage limit",
+      "latency_ms": 112.5
+    },
+    {
+      "check": "Traffic report reaches cap and revokes through quota worker",
+      "latency_ms": 2998.5
+    },
+    {
+      "check": "Manual usage reset restores limited member",
+      "latency_ms": 2901.4
+    },
+    {
+      "check": "Null limit remains explicitly unlimited",
+      "latency_ms": 3004.1
+    },
+    {
+      "check": "Node disable reconnect and re-enable preserve qualification",
+      "latency_ms": 309.5
+    },
+    {
+      "check": "Subscription visibility does not disable node credentials",
+      "latency_ms": 318.0
+    },
+    {
+      "check": "Delete member revokes all connected nodes",
+      "latency_ms": 2377.8
+    },
+    {
+      "check": "Long-running WebSocket accepts rotated server token only",
+      "latency_ms": 109.0
+    }
+  ]
+}

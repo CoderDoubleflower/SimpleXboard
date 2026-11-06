@@ -2,62 +2,25 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Server;
+use App\Jobs\NodeUserSyncJob;
 use App\Models\User;
-use App\Services\NodeSyncService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Redis;
 
 class CheckTrafficExceeded extends Command
 {
     protected $signature = 'check:traffic-exceeded';
-    protected $description = '检查流量超标用户并通知节点';
+    protected $description = '同步额度耗尽、到期及停用成员的节点撤销';
 
-    public function handle()
+    public function handle(): int
     {
-        $count = Redis::scard('traffic:pending_check');
-        if ($count <= 0) {
-            return;
+        $count = (int) Redis::scard('traffic:pending_check');
+        $pending = $count > 0 ? (array) Redis::spop('traffic:pending_check', $count) : [];
+        // Expiry needs revocation even when a member has stopped reporting traffic.
+        $ineligible = User::whereNotIn('id', User::eligible()->select('id'))->pluck('id')->all();
+        foreach (array_unique(array_merge($pending, $ineligible)) as $id) {
+            NodeUserSyncJob::dispatch((int) $id, 'updated')->afterCommit();
         }
-
-        $pendingUserIds = array_map('intval', Redis::spop('traffic:pending_check', $count));
-
-        $exceededUsers = User::toBase()
-            ->whereIn('id', $pendingUserIds)
-            ->whereRaw('u + d >= transfer_enable')
-            ->where('transfer_enable', '>', 0)
-            ->where('banned', 0)
-            ->select(['id', 'group_id'])
-            ->get();
-
-        if ($exceededUsers->isEmpty()) {
-            return;
-        }
-
-        $groupedUsers = $exceededUsers->groupBy('group_id');
-        $notifiedCount = 0;
-
-        foreach ($groupedUsers as $groupId => $users) {
-            if (!$groupId) {
-                continue;
-            }
-
-            $userIdsInGroup = $users->pluck('id')->toArray();
-            $servers = Server::whereJsonContains('group_ids', (string) $groupId)->get();
-
-            foreach ($servers as $server) {
-                if (!NodeSyncService::isNodeOnline($server->id)) {
-                    continue;
-                }
-
-                NodeSyncService::push($server->id, 'sync.user.delta', [
-                    'action' => 'remove',
-                    'users' => array_map(fn($id) => ['id' => $id], $userIdsInGroup),
-                ]);
-                $notifiedCount++;
-            }
-        }
-
-        $this->info("Checked " . count($pendingUserIds) . " users, notified {$notifiedCount} nodes for " . $exceededUsers->count() . " exceeded users.");
+        return self::SUCCESS;
     }
 }

@@ -26,7 +26,7 @@ class ServerSave extends FormRequest
     ];
 
     private const ECH_RULES = [
-        'enabled' => 'nullable|boolean',
+        'enabled' => 'sometimes|boolean',
         'config' => 'nullable|string',
         'query_server_name' => 'nullable|string',
         'key' => 'nullable|string',
@@ -112,31 +112,27 @@ class ServerSave extends FormRequest
     private function getBaseRules(): array
     {
         return [
+            'id' => 'sometimes|integer|exists:v2_server,id',
             'type' => 'required|in:' . implode(',', Server::VALID_TYPES),
             'spectific_key' => 'nullable|string',
             'code' => 'nullable|string',
-            'show' => '',
+            'show' => 'sometimes|boolean',
             'name' => 'required|string',
-            'group_ids' => 'nullable|array',
             'route_ids' => 'nullable|array',
             'parent_id' => 'nullable|integer',
-            'machine_id' => 'nullable|integer',
-            'enabled' => 'nullable|boolean',
+            'machine_id' => 'nullable|integer|exists:v2_server_machine,id',
+            'enabled' => 'sometimes|boolean',
             'host' => 'required',
             'port' => 'required',
             'server_port' => 'required',
             'tags' => 'nullable|array',
             'excludes' => 'nullable|array',
             'ips' => 'nullable|array',
-            'rate' => 'required|numeric',
-            'rate_time_enable' => 'nullable|boolean',
-            'rate_time_ranges' => 'nullable|array',
             'custom_outbounds' => 'nullable|array',
             'custom_routes' => 'nullable|array',
             'cert_config' => 'nullable|array',
-            'rate_time_ranges.*.start' => 'required_with:rate_time_ranges|string|date_format:H:i',
-            'rate_time_ranges.*.end' => 'required_with:rate_time_ranges|string|date_format:H:i',
-            'rate_time_ranges.*.rate' => 'required_with:rate_time_ranges|numeric|min:0',
+            'group_ids' => 'prohibited',
+            'rate' => 'prohibited', 'rate_time_enable' => 'prohibited', 'rate_time_ranges' => 'prohibited',
             'protocol_settings' => 'array',
             'transfer_enable' => 'nullable|integer|min:0',
         ];
@@ -278,8 +274,6 @@ class ServerSave extends FormRequest
     {
         return [
             'name.required' => '节点名称不能为空',
-            'group_ids.required' => '权限组不能为空',
-            'group_ids.array' => '权限组格式不正确',
             'route_ids.array' => '路由组格式不正确',
             'parent_id.integer' => '父ID格式不正确',
             'host.required' => '节点地址不能为空',
@@ -287,8 +281,6 @@ class ServerSave extends FormRequest
             'server_port.required' => '后端服务端口不能为空',
             'tls.required' => 'TLS不能为空',
             'tags.array' => '标签格式不正确',
-            'rate.required' => '倍率不能为空',
-            'rate.numeric' => '倍率格式不正确',
             'network.required' => '传输协议不能为空',
             'network.in' => '传输协议格式不正确',
             'networkSettings.array' => '传输协议配置有误',

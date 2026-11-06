@@ -3,7 +3,6 @@
 namespace App\Exceptions;
 
 use App\Helpers\ApiResponse;
-use App\Services\Plugin\InterceptResponseException;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Illuminate\Support\Arr;
 use Illuminate\View\ViewException;
@@ -20,7 +19,6 @@ class Handler extends ExceptionHandler
      */
     protected $dontReport = [
         ApiException::class,
-        InterceptResponseException::class
     ];
 
     /**
@@ -58,7 +56,7 @@ class Handler extends ExceptionHandler
     public function render($request, Throwable $exception)
     {
         if ($exception instanceof ViewException) {
-            return $this->fail([500, '主题渲染失败。如更新主题，参数可能发生变化请重新配置主题后再试。']);
+            return $this->fail([500, '管理界面渲染失败，请检查前端构建产物和应用日志。']);
         }
         // ApiException主动抛出错误
         if ($exception instanceof ApiException) {
@@ -79,9 +77,6 @@ class Handler extends ExceptionHandler
             //
         });
 
-        $this->renderable(function (InterceptResponseException $e) {
-            return $e->getResponse();
-        });
     }
 
     protected function convertExceptionToArray(Throwable $e)
