@@ -65,7 +65,7 @@ git diff --check
 
 ## 验证状态
 
-以下记录实际执行结果。[CI run 42291285755](https://github.com/CoderDoubleflower/SimpleXboard/actions/runs/42291285755) 的 verify、protocols、image 三个 job 均通过；对应 head 为 `008147179a61907f67b5f16214141406d6a486fa`。合并前仍检查最终 head 的 CI。
+以下记录实际执行结果。[CI run 42292608244](https://github.com/CoderDoubleflower/SimpleXboard/actions/runs/42292608244) 的 verify、protocols、image 三个 job 均通过；对应 head 为 `714df3291f75a8dd7d8d7fb68781f9f04a23c272`。合并前继续核对最终 head 的 CI；后续仅整理本文记录。
 
 | 项目 | 当前证据 |
 | --- | --- |
@@ -77,7 +77,8 @@ git diff --check
 | 前端模块与构建 | 15/15 模块测试通过，两次构建 manifest 一致；最终产物版本 `0e935d971535a48d` |
 | 浏览器桌面/移动端 | 真实 Chrome Headless Shell：13/13 操作场景通过，12 张截图；1440px 桌面、390px 手机五页及手机操作实际点击通过，无 JavaScript 异常、缺失资源或意外 HTTP 错误。见 `docs/verification/round-2-panel.json` |
 | 实际协议连接 | CI 使用官方 sing-box 1.14.4，两协议真实 HTTP 代理均通过；原样执行面板订阅、开启 TLS 校验、停止对应服务器后的负面对照通过。见 [协议验证](round-2-protocol-verification.md) |
-| 完整镜像构建 | GitHub CI Linux amd64 全量构建通过，容器内 Laravel CLI 启动通过，未发布；先前本地 Buildah 的 UID/GID 限制与 CI 摘要见 [构建记录](round-2-build-verification.md) |
+| 默认容器与重启 | 11/11 场景通过，默认 entrypoint 的 Caddy/Octane/Horizon/Redis/Workerman 实际运行；HTTP 备份、两节点 WS 撤销与恢复、重启后凭据/禁用状态持久化均通过。见 `docs/verification/round-2-container.json` |
+| 完整镜像构建 | GitHub CI Linux amd64 全量构建、CLI 启动和默认服务运行均通过，未发布；先前本地 Buildah 的 UID/GID 限制与 CI 摘要见 [构建记录](round-2-build-verification.md) |
 
 真实节点测试覆盖创建、更新、轮换、停用、重连、恢复、直接授权改变、共享权限恢复、硬上限、流量上报耗尽、手动清零、不限额、节点启停、订阅隐藏、删除和节点服务令牌轮换。该次普通增量约 0.1–3.1 秒，额度撤销约 3 秒；这些是本地单次观测，**不是生产 SLA**。队列积压、调度周期与节点实现会影响实际生效时间。
 

@@ -45,4 +45,25 @@ docker run --rm --entrypoint php \
   ghcr.io/coderdoubleflower/simplexboard:local artisan --version
 ```
 
-仓库 CI 已实际通过完整本地上下文构建及上述 CLI 启动检查，`push: false`。真实协议连接由独立 job 验证；容器默认长驻服务及重启保持性正在独立启动测试中核验，不能用 CLI 版本输出替代。
+仓库 CI 已实际通过完整本地上下文构建及 CLI 启动检查，`push: false`。真实协议连接和下述默认容器服务验证分别独立执行。
+
+
+## 默认服务、备份与整容器重启：已通过
+
+后续提交 `714df3291f75a8dd7d8d7fb68781f9f04a23c272` 再次完成完整构建，并执行 `tests/Integration/container.py` 的全部 11 项真实验收。证据：[run 42292608244 / image job 128149630475](https://github.com/CoderDoubleflower/SimpleXboard/actions/runs/42292608244/job/128149630475)。该次镜像 ID / 摘要为 `sha256:eb6b8b93fd9dcd8584c6a67659111acc41b1212597f297248d09170aba667dcd`。
+
+脚本使用默认 entrypoint，同时运行 Caddy、Octane、Horizon、Redis 与 Workerman，只以 `RESOURCE_PROFILE=minimal` 控制测试资源。随机命名的两个数据卷和容器均在结束后清理，没有使用已有业务数据。
+
+实际通过的行为：管理员 HTTP 登录；管理页与 JS/CSS MIME、SRI 哈希；新成员双协议订阅；以容器 `www` 进程创建、下载原生 SQLite gzip 备份；Caddy 的真实 WebSocket 101 升级；两个节点的全量与禁用撤销；整容器 restart 后重新登录、静态资源可用、token/UUID/禁用状态保持；重连的 HTTP/WS 全量不会复活禁用成员；恢复后两个节点重新下发原凭据；重启后仍能创建和下载备份。
+
+原始脱敏报告：[round-2-container.json](verification/round-2-container.json)。11 项结束时距测试开始累计约 15.1 秒，该值不是生产重启或同步的性能保证。CI artifact 为 `13539739030`；下载 ZIP 的 SHA-256 已与 GitHub 返回值核对。
+
+复现命令：
+
+```bash
+python3 tests/Integration/container.py \
+  --image ghcr.io/coderdoubleflower/simplexboard:local \
+  --artifacts storage/framework/testing/container-e2e
+```
+
+该结果覆盖 Linux amd64 默认镜像与 SQLite。ARM64、用户实际主机挂载和公网代理链路仍需在对应环境复测。

@@ -96,7 +96,8 @@ python tests/Support/run-stack.py --without-scheduler -- python panel/tests/e2e.
 
 - [第二轮交接与自测记录](docs/round-2-handoff.md)
 - [第二轮数据迁移、备份与回退](docs/round-2-migration.md)
-- [第二轮镜像构建验证](docs/round-2-build-verification.md)
+- [第二轮镜像构建及容器重启验证](docs/round-2-build-verification.md)
+- [VLESS + REALITY / Hysteria2 实际连接验证](docs/round-2-protocol-verification.md)
 - [第一轮历史记录](docs/round-1-handoff.md)
 
 升级保留旧成员 ID、token、UUID、禁用状态和用量；历史 `0/null` 额度不会变成无限成员。旧分组转换为直接成员与节点授权，历史倍率统计与新实际字节分开保存。具体映射和回退边界以迁移文档为准。
