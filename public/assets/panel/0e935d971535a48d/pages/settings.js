@@ -1,5 +1,6 @@
 import { h, icon, button, input, select, field, textarea, checkbox, secretInput, formValues, pageHeader, panel, loading, errorState, notice, table, badge, toast, runAction, confirmAction, tabs, emptyState } from '../ui.js';
 import { data, datetime, errorMessage } from '../format.js';
+import { PATH_PATTERN } from '../domain.js';
 
 export async function settingsPage(host, context) {
   const { api, signal, refresh } = context;
@@ -62,7 +63,7 @@ function generalSettings(config, context) {
     field('实例名称', input('app_name', site.app_name ?? 'SimpleXboard', { required: true, maxlength: 80 }), { required: true }),
     field('面板地址', input('app_url', site.app_url ?? '', { type: 'url', placeholder: 'https://panel.example.com' }), { hint: '机器接入命令使用此地址。' }),
     field('订阅入口地址', input('subscribe_url', site.subscribe_url ?? '', { placeholder: 'https://sub.example.com' }), { wide: true, hint: '留空使用当前站点；多个入口用英文逗号分隔。可使用独立的 Cloudflare 代理域名。' }),
-    field('订阅路径', input('subscribe_path', subscribe.subscribe_path ?? 's', { required: true, maxlength: 64, pattern: '[A-Za-z0-9_-]+', placeholder: 's' }), { hint: '例如 s，对应 /s/成员令牌。修改后需向成员分享新链接。' }),
+    field('订阅路径', input('subscribe_path', subscribe.subscribe_path ?? 's', { required: true, maxlength: 64, pattern: PATH_PATTERN, placeholder: 's' }), { hint: '例如 s，对应 /s/成员令牌。修改后需向成员分享新链接。' }),
     h('div', { class: 'stack-md align-end' }, checkbox('force_https', '强制 HTTPS', Boolean(site.force_https)), checkbox('show_protocol_to_server_enable', '在订阅节点名称中显示协议', Boolean(subscribe.show_protocol_to_server_enable)))));
   const transport = panel('节点通信', h('div', { class: 'panel-body stack-lg' },
     h('div', { class: 'form-grid' },
@@ -110,7 +111,7 @@ function securitySettings(config, context) {
   }
   loadSessions();
   const access = settingsForm(context, [panel('登录与入口保护', h('div', { class: 'panel-body form-grid' },
-    field('后台访问路径', input('secure_path', safe.secure_path ?? context.bootstrap.secure_path, { required: true, minlength: 8, maxlength: 64, pattern: '[A-Za-z0-9_-]+', placeholder: 'private-admin' }), { wide: true, hint: '修改后会自动跳转到新入口，当前管理员会话保留。' }),
+    field('后台访问路径', input('secure_path', safe.secure_path ?? context.bootstrap.secure_path, { required: true, minlength: 8, maxlength: 64, pattern: PATH_PATTERN, placeholder: 'private-admin' }), { wide: true, hint: '修改后会自动跳转到新入口，当前管理员会话保留。' }),
     checkbox('safe_mode_enable', '限制面板访问域名', Boolean(safe.safe_mode_enable), '仅接受“面板地址”中配置的域名。'),
     checkbox('password_limit_enable', '限制连续密码错误', safe.password_limit_enable !== false && safe.password_limit_enable !== 0),
     field('允许的连续错误次数', input('password_limit_count', safe.password_limit_count ?? 5, { type: 'number', min: 1, max: 20, step: 1, required: true })),

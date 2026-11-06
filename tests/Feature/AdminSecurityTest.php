@@ -102,6 +102,8 @@ class AdminSecurityTest extends TestCase
         $this->withHeader('Authorization', $this->auth)->postJson($this->prefix . '/config/save', ['frontend_theme' => 'old'])->assertUnprocessable();
         $this->postJson($this->prefix . '/config/save', ['subscribe_url' => 'javascript:alert(1)'])->assertUnprocessable();
         $this->postJson($this->prefix . '/config/save', ['subscribe_url' => ['https://example.test']])->assertUnprocessable();
+        $this->postJson($this->prefix . '/config/save', ['subscribe_url' => 'https://example.test/?0'])->assertUnprocessable();
+        $this->postJson($this->prefix . '/config/save', ['subscribe_url' => 'https://0@example.test'])->assertUnprocessable();
         $this->postJson($this->prefix . '/config/save', ['subscribe_path' => 'samepath', 'secure_path' => 'samepath'])->assertUnprocessable();
         $this->postJson($this->prefix . '/config/save', ['secure_path' => 'private-new-panel', 'subscribe_path' => 'private-sub'])
             ->assertOk()->assertJsonPath('data.admin_url', '/private-new-panel');

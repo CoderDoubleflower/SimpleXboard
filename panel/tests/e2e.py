@@ -86,10 +86,13 @@ def main():
         def close_dialog():
             page.locator('dialog[open]').last.locator('.dialog-footer').get_by_role('button', name='关闭', exact=True).click()
 
-        def action(endpoint, click):
+        def action(endpoint, click, read=True):
             with page.expect_response(lambda response: urlsplit(response.url).path.endswith('/' + endpoint) and response.request.method == 'POST') as waiting:
                 click()
             response = waiting.value
+            assert response.ok, f'{endpoint}: HTTP {response.status}'
+            if not read:
+                return None
             payload = response.json()
             assert response.ok and payload.get('status') != 'fail', f'{endpoint}: HTTP {response.status}: {payload}'
             return payload.get('data', payload)
@@ -301,11 +304,11 @@ def main():
             expect(page.get_by_text('当前会话', exact=True)).to_be_visible()
             new_path = 'private-panel-e2e'
             page.get_by_label('后台访问路径', exact=True).fill(new_path)
-            action('config/save', lambda: page.get_by_role('button', name='保存安全设置', exact=True).click())
+            action('config/save', lambda: page.get_by_role('button', name='保存安全设置', exact=True).click(), read=False)
             page.wait_for_url(base + '/' + new_path + '#/settings?tab=security')
             expect(page.get_by_label('后台访问路径', exact=True)).to_have_value(new_path)
             page.get_by_label('后台访问路径', exact=True).fill(admin_path)
-            action('config/save', lambda: page.get_by_role('button', name='保存安全设置', exact=True).click())
+            action('config/save', lambda: page.get_by_role('button', name='保存安全设置', exact=True).click(), read=False)
             page.wait_for_url(base + '/' + admin_path + '#/settings?tab=security')
             expect(page.get_by_label('后台访问路径', exact=True)).to_have_value(admin_path)
             screenshot('06-security-desktop')
@@ -338,9 +341,18 @@ def main():
                 nav(label)
                 overflow = page.evaluate('document.documentElement.scrollWidth > window.innerWidth + 1')
                 assert not overflow, f'Mobile horizontal overflow: {label}'
+                clipped = page.evaluate('''() => [...document.querySelectorAll('td.actions-cell .icon-button')].some(button => {
+                    const bounds = button.getBoundingClientRect();
+                    const cell = button.closest('td').getBoundingClientRect();
+                    return bounds.width > 0 && (bounds.left < cell.left - 1 || bounds.right > cell.right + 1);
+                })''')
+                assert not clipped, f'Mobile row action is clipped: {label}'
                 if label in ('概览', '成员与订阅', 'VPS 与节点'):
                     screenshot('07-mobile-' + {'概览': 'overview', '成员与订阅': 'members', 'VPS 与节点': 'nodes'}[label])
             nav('成员与订阅')
+            page.get_by_role('button', name='查看 ' + member_name + ' 的订阅', exact=True).click()
+            expect(dialog('成员订阅').get_by_label('订阅地址', exact=True)).to_have_value(rotated['subscribe_url'])
+            close_dialog()
             page.get_by_role('button', name='添加成员', exact=True).click()
             form = dialog('添加成员')
             expect(form.get_by_label('成员名称', exact=True)).to_be_focused()

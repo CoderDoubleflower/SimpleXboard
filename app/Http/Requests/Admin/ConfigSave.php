@@ -51,7 +51,7 @@ class ConfigSave extends FormRequest
             $subscribeUrl = $this->input('subscribe_url');
             foreach (is_string($subscribeUrl) ? preg_split('/\s*,\s*/', $subscribeUrl, -1, PREG_SPLIT_NO_EMPTY) : [] as $url) {
                 if (!filter_var($url, FILTER_VALIDATE_URL) || !in_array(parse_url($url, PHP_URL_SCHEME), ['http', 'https'], true)
-                    || parse_url($url, PHP_URL_USER) || parse_url($url, PHP_URL_QUERY) || parse_url($url, PHP_URL_FRAGMENT)) {
+                    || parse_url($url, PHP_URL_USER) !== null || parse_url($url, PHP_URL_QUERY) !== null || parse_url($url, PHP_URL_FRAGMENT) !== null) {
                     $validator->errors()->add('subscribe_url', '订阅域名须为完整的 http(s) URL，不能包含凭据、查询或片段');
                 }
             }

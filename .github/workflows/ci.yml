@@ -2,7 +2,7 @@ name: Verify SimpleXboard
 
 on:
   push:
-    branches: ['**']
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -21,7 +21,7 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          extensions: mbstring, intl, bcmath, pdo_sqlite, redis, zip, sodium
+          extensions: mbstring, intl, bcmath, pdo_sqlite, redis, zip, sodium, pcntl, sockets
           coverage: none
           tools: composer:2.11.1
       - uses: actions/setup-node@v4
@@ -50,6 +50,9 @@ jobs:
           sudo apt-get install -y redis-server
           python -m pip install -r tests/requirements-e2e.txt
           python -m playwright install --with-deps chromium
+      - name: Exercise a fresh install and administrator login
+        timeout-minutes: 5
+        run: python tests/Integration/install.py --artifacts storage/framework/testing/install-e2e
       - name: Exercise real Redis, Horizon and node WebSocket lifecycle
         timeout-minutes: 10
         run: python tests/Support/run-stack.py --artifacts storage/framework/testing/node-e2e -- python tests/Integration/node_lifecycle.py
@@ -64,6 +67,11 @@ jobs:
           path: storage/framework/testing/*-e2e/
           if-no-files-found: ignore
           retention-days: 7
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - name: Build local checkout without publishing
         uses: docker/build-push-action@v6
@@ -80,3 +88,36 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Check image bootstraps without a database
         run: docker run --rm --entrypoint php simplexboard:ci artisan --version
+
+  protocols:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, intl, bcmath, pdo_sqlite, redis, zip, sodium, pcntl, sockets
+          coverage: none
+          tools: composer:2.11.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked backend and fixed protocol runtime
+        run: |
+          composer install --prefer-dist --no-interaction --no-scripts
+          sudo apt-get update
+          sudo apt-get install -y redis-server curl openssl
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/sing-box.tar.gz" https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-linux-amd64.tar.gz
+          echo "699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968  $RUNNER_TEMP/sing-box.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/sing-box.tar.gz" -C "$RUNNER_TEMP"
+      - name: Connect through real VLESS REALITY and Hysteria2 subscriptions
+        timeout-minutes: 5
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/protocol-e2e -- python tests/Integration/protocol_connections.py --sing-box "$RUNNER_TEMP/sing-box-1.14.4-linux-amd64/sing-box"
+      - name: Save protocol evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: protocol-evidence
+          path: storage/framework/testing/protocol-e2e/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -120,7 +120,7 @@ class Helper
         }
         
         $urlString = (string)admin_setting('subscribe_url', '');
-        $subscribeUrlList = $urlString ? explode(',', $urlString) : [];
+        $subscribeUrlList = $urlString ? array_values(array_filter(array_map('trim', explode(',', $urlString)))) : [];
         
         if (empty($subscribeUrlList)) {
             return url($path);

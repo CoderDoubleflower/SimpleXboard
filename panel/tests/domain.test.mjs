@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { memberPayload, nodePayload, quotaBytes, gibValue, jsonObject } from '../src/domain.js';
+import { memberPayload, nodePayload, quotaBytes, gibValue, jsonObject, PATH_PATTERN } from '../src/domain.js';
 import { bytes, memberStatus, protocolName, subscriptionUrl } from '../src/format.js';
+
+test('path patterns work with the HTML pattern Unicode sets flag', () => {
+  const pattern = new RegExp(`^(?:${PATH_PATTERN})$`, 'v');
+  assert.equal(pattern.test('private-panel_01'), true);
+  assert.equal(pattern.test('s'), true);
+  assert.equal(pattern.test('bad/path'), false);
+  assert.equal(pattern.test('bad path'), false);
+});
 
 test('member defaults are passwordless, unlimited, permanent and share enabled nodes', () => {
   const member = memberPayload({ name: '  家人  ' });

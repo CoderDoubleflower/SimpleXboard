@@ -1,4 +1,5 @@
 const GIB = 1073741824;
+export const PATH_PATTERN = '[A-Za-z0-9_\\-]+';
 
 export function optionalNumber(value, label, { integer = true, min = 0 } = {}) {
   if (value === '' || value === null || value === undefined) return null;

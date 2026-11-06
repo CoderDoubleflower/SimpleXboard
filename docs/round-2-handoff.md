@@ -46,7 +46,7 @@ Push/PR CI 验证后端、确定性前端、真实同步、浏览器交互与镜
 
 ## 自测环境与命令
 
-本地执行环境为 Linux amd64、PHP 8.4.24、PHPUnit 11.5.27、Composer 2.11.1、Redis 8.0.2、SQLite 3.46.1、Python Playwright 1.62.0 与 websockets 16.0。PHP 扩展包含 pdo_sqlite、redis/igbinary、pcntl、sockets、sodium、intl、mbstring、zip。Dockerfile 目标 PHP 8.2，容器中版本与扩展由构建步骤实际检查。
+本地执行环境为 Linux amd64、PHP 8.4.24、PHPUnit 11.5.27、Composer 2.11.1、Redis 8.0.2、SQLite 3.46.1、Python Playwright 1.62.0 、websockets 16.0、Node.js 24.22.1 与 Chrome Headless Shell 151.0.7922.34。PHP 扩展包含 pdo_sqlite、redis/igbinary、pcntl、sockets、sodium、intl、mbstring、zip。Dockerfile 目标 PHP 8.2，容器中版本与扩展由构建步骤实际检查。
 
 ```bash
 composer validate --no-check-publish
@@ -55,6 +55,7 @@ php vendor/bin/phpunit
 npm --prefix panel ci
 npm --prefix panel test
 npm --prefix panel run build
+python tests/Integration/install.py --artifacts storage/framework/testing/install-e2e
 python tests/Support/run-stack.py --artifacts storage/framework/testing/node-e2e -- python tests/Integration/node_lifecycle.py
 python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/panel-e2e -- python panel/tests/e2e.py
 git diff --check
@@ -64,17 +65,18 @@ git diff --check
 
 ## 验证状态
 
-本节在合并前根据最终自测结果更新；不把未运行步骤写为通过。
+以下记录实际执行结果；GitHub CI 的最终状态在合并前核对。
 
 | 项目 | 当前证据 |
 | --- | --- |
-| 后端全量 | 首轮全量发现四处旧测试样例仍依赖 plan/rate，已更新并保留统计边界覆盖；最终全量结果待记录 |
+| 后端全量 | 全量 67 tests / 713 assertions 通过；221 个 PHP 文件语法检查无错误 |
 | 管理认证与备份 | 12 tests / 62 assertions 通过；包括真实 SQLite 快照、完整性、离线恢复、文件权限、空格密码与异常配置输入 |
+| 真实全新安装 | `xboard:install` 临时完整副本 + TCP Redis + HTTP，6/6 场景通过；包含输出密码登录、首个无密码成员、重跑安装不覆写现有记录。见 `docs/verification/round-2-install.json` |
 | 核心成员与迁移 | 26 tests / 326 assertions 通过；全新迁移、第一轮升级、可选清理后的升级、身份保持、权限差异、零/不限/正数额度、回退与文件副本验证 |
 | 真实节点同步 | 17/17 场景通过；HTTP + Redis + Horizon + Workerman，非消息 mock。报告见 `docs/verification/round-2-node-lifecycle.json` |
-| 前端模块与构建 | 13 项模块测试通过，两次构建 manifest 一致；最终验收结果待记录 |
-| 浏览器桌面/移动端 | 本机 Chromium 受 Unix socket 权限限制，正在尝试官方 headless shell；目前未宣称通过 |
-| 实际协议连接 | 本机回环客户端/服务端验证进行中；未连接真实 VPS |
+| 前端模块与构建 | 15/15 模块测试通过，两次构建 manifest 一致；最终产物版本 `0e935d971535a48d` |
+| 浏览器桌面/移动端 | 真实 Chrome Headless Shell：13/13 操作场景通过，12 张截图；1440px 桌面、390px 手机五页及手机操作实际点击通过，无 JavaScript 异常、缺失资源或意外 HTTP 错误。见 `docs/verification/round-2-panel.json` |
+| 实际协议连接 | 已固定官方 sing-box 1.14.4 并完成脚本；本地被 netlink 权限阻塞，正在 GitHub CI 的独立 job 执行实际回环连接。见 [协议验证](round-2-protocol-verification.md) |
 | 完整镜像构建 | Buildah 已实际拉取基础镜像，但外层仅单 UID/GID 映射，无法解包 `/etc/shadow` 的 group 42。尚未构建成功；见 [构建记录](round-2-build-verification.md) |
 
 真实节点测试覆盖创建、更新、轮换、停用、重连、恢复、直接授权改变、共享权限恢复、硬上限、流量上报耗尽、手动清零、不限额、节点启停、订阅隐藏、删除和节点服务令牌轮换。该次普通增量约 0.1–3.1 秒，额度撤销约 3 秒；这些是本地单次观测，**不是生产 SLA**。队列积压、调度周期与节点实现会影响实际生效时间。
@@ -89,3 +91,11 @@ git diff --check
 4. 核验实际 Cloudflare 订阅域名、TLS/源站保护和反向代理路径。没有该环境时不更改其配置。
 
 复测时记录客户端和节点后端版本、操作时间、队列与节点日志、旧新凭据的连接结果。先使用隔离成员和节点，不以未知生产库做试验。
+
+## 管理台验收截图
+
+以下是隔离测试数据。桌面和手机均使用真实后台 API；完整场景和请求清单见上述 JSON 报告。
+
+![桌面成员管理](verification/panel-members-desktop.png)
+
+![手机成员管理](verification/panel-members-mobile.png)

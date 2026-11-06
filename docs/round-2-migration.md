@@ -178,3 +178,18 @@ python3 tests/Support/run-stack.py \
 2026-11-06 在独立 SQLite / Redis / Horizon / Laravel HTTP / Workerman / `schedule:work` 进程中通过全部 17 项。生产每分钟调度未被人为加速；报告保存为 artifacts 目录下的 `node-lifecycle-results.json`。测试覆盖全量与增量、凭据 remove-before-add、禁用 / 删除 / 额度耗尽后撤销、恢复、节点禁用与重连，以及全局服务端令牌轮换。首轮真实测试发现长驻 WebSocket 的设置实例持有旧令牌，已改为每次握手重新读取设置；完整复跑通过。
 
 这验证的是真实控制链路，没有连接用户 VPS，也没有宣称真实 VLESS / Hysteria2 客户端数据平面通过。机器 `is_active` 原有 HTTP 鉴权和 WS 握手门槛保留；旧版已连接机器在状态变化后不立即断开，本轮未扩展该既有行为。MySQL / PostgreSQL 数据迁移、完整镜像构建与真实服务器上线仍各需独立验证。
+
+### 完整新安装命令
+
+另执行了真实 `xboard:install`，并非只调用管理员创建函数。测试复制应用到临时目录，使用独立 SQLite、独立 Redis 和真实 HTTP，结束后清理测试进程与目录；主应用配置、数据库和缓存文件不参与写入。
+
+```bash
+python3 tests/Integration/install.py \
+  --php /path/to/php \
+  --redis /path/to/redis-server \
+  --artifacts /isolated/path/install-e2e
+```
+
+2026-11-06 六项通过：完整安装生成配置 / 迁移 / 唯一管理员；安装时的 array / sync 临时驱动未泄漏到运行配置；打印密码可通过 HTTP 登录；打印管理员路径可访问 API；只填名称可创建带订阅凭据、无登录密码且默认共享 / 不限量的首个成员；重复执行安装不会删除既有管理员或成员。报告为 `install-results.json`，安装输出保存前遮蔽生成密码和管理员路径。
+
+安装子进程的 `APP_ENV=testing` 仅用于让 Laravel Prompts 在管道中接受测试输入；后续 HTTP 进程移除该覆盖，读取安装生成的 `APP_ENV=production` 配置。测试没有替换安装命令、跳过迁移或手工创建管理员。

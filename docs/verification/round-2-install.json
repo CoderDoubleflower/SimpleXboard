@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "scope": "Actual xboard:install CLI in a disposable copy, real Redis and HTTP",
+  "checks": [
+    "Real installer persists settings, complete schema and one administrator",
+    "Temporary install cache and queue overrides do not persist",
+    "Generated administrator password authenticates through HTTP",
+    "Installer's printed administrator path reaches authenticated APIs",
+    "First name-only member has subscription credentials and no login password",
+    "Repeated installer leaves the existing administrator and member intact"
+  ]
+}

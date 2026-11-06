@@ -103,7 +103,11 @@ class PrivateMemberMigrationTest extends TestCase
         $this->assertTrue($new->isAvailable());
         $this->assertSame($backupHash, hash_file('sha256', $this->database . '.backup'));
 
-        $this->assertSame(0, Artisan::call('migrate:rollback', ['--step' => 1, '--force' => true]));
+        $this->assertSame(0, Artisan::call('migrate:rollback', [
+            '--step' => 1,
+            '--path' => 'database/migrations/2026_11_06_000002_remove_member_plan_dependencies.php',
+            '--force' => true,
+        ]));
         $old = DB::table('v2_user')->where('id', $member->id)->first();
         $this->assertSame($legacy['token'], $old->token);
         $this->assertSame($legacy['uuid'], $old->uuid);
