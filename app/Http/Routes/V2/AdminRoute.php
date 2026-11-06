@@ -8,15 +8,10 @@ use App\Http\Controllers\V2\Admin\Server\GroupController;
 use App\Http\Controllers\V2\Admin\Server\RouteController;
 use App\Http\Controllers\V2\Admin\Server\ManageController;
 use App\Http\Controllers\V2\Admin\Server\MachineController;
-use App\Http\Controllers\V2\Admin\OrderController;
 use App\Http\Controllers\V2\Admin\UserController;
 use App\Http\Controllers\V2\Admin\StatController;
 use App\Http\Controllers\V2\Admin\NoticeController;
-use App\Http\Controllers\V2\Admin\TicketController;
-use App\Http\Controllers\V2\Admin\CouponController;
-use App\Http\Controllers\V2\Admin\GiftCardController;
 use App\Http\Controllers\V2\Admin\KnowledgeController;
-use App\Http\Controllers\V2\Admin\PaymentController;
 use App\Http\Controllers\V2\Admin\SystemController;
 use App\Http\Controllers\V2\Admin\ThemeController;
 use App\Http\Controllers\V2\Admin\TrafficResetController;
@@ -60,7 +55,6 @@ class AdminRoute
                 $router->get('/fetch', [PlanController::class, 'fetch']);
                 $router->post('/save', [PlanController::class, 'save']);
                 $router->post('/drop', [PlanController::class, 'drop']);
-                $router->post('/update', [PlanController::class, 'update']);
                 $router->post('/sort', [PlanController::class, 'sort']);
             });
 
@@ -110,17 +104,6 @@ class AdminRoute
                 $router->get('/history', [MachineController::class, 'history']);
             });
 
-            // Order
-            $router->group([
-                'prefix' => 'order'
-            ], function ($router) {
-                $router->any('/fetch', [OrderController::class, 'fetch']);
-                $router->post('/update', [OrderController::class, 'update']);
-                $router->post('/assign', [OrderController::class, 'assign']);
-                $router->post('/paid', [OrderController::class, 'paid']);
-                $router->post('/cancel', [OrderController::class, 'cancel']);
-                $router->post('/detail', [OrderController::class, 'detail']);
-            });
 
             // User
             $router->group([
@@ -129,12 +112,11 @@ class AdminRoute
                 $router->any('/fetch', [UserController::class, 'fetch']);
                 $router->post('/update', [UserController::class, 'update']);
                 $router->get('/getUserInfoById', [UserController::class, 'getUserInfoById']);
+                $router->post('/create', [UserController::class, 'create']);
                 $router->post('/generate', [UserController::class, 'generate']);
                 $router->post('/dumpCSV', [UserController::class, 'dumpCSV']);
-                $router->post('/sendMail', [UserController::class, 'sendMail']);
                 $router->post('/ban', [UserController::class, 'ban']);
                 $router->post('/resetSecret', [UserController::class, 'resetSecret']);
-                $router->post('/setInviteUser', [UserController::class, 'setInviteUser']);
                 $router->post('/destroy', [UserController::class, 'destroy']);
             });
 
@@ -146,7 +128,6 @@ class AdminRoute
                 $router->get('/getStats', [StatController::class, 'getStats']);
                 $router->get('/getServerLastRank', [StatController::class, 'getServerLastRank']);
                 $router->get('/getServerYesterdayRank', [StatController::class, 'getServerYesterdayRank']);
-                $router->get('/getOrder', [StatController::class, 'getOrder']);
                 $router->any('/getStatUser', [StatController::class, 'getStatUser']);
                 $router->get('/getRanking', [StatController::class, 'getRanking']);
                 $router->get('/getStatRecord', [StatController::class, 'getStatRecord']);
@@ -165,51 +146,8 @@ class AdminRoute
                 $router->post('/sort', [NoticeController::class, 'sort']);
             });
 
-            // Ticket
-            $router->group([
-                'prefix' => 'ticket'
-            ], function ($router) {
-                $router->any('/fetch', [TicketController::class, 'fetch']);
-                $router->post('/reply', [TicketController::class, 'reply']);
-                $router->post('/close', [TicketController::class, 'close']);
-            });
 
-            // Coupon
-            $router->group([
-                'prefix' => 'coupon'
-            ], function ($router) {
-                $router->any('/fetch', [CouponController::class, 'fetch']);
-                $router->post('/generate', [CouponController::class, 'generate']);
-                $router->post('/drop', [CouponController::class, 'drop']);
-                $router->post('/show', [CouponController::class, 'show']);
-                $router->post('/update', [CouponController::class, 'update']);
-            });
 
-            // Gift Card
-            $router->group([
-                'prefix' => 'gift-card'
-            ], function ($router) {
-                // Template management
-                $router->any('/templates', [GiftCardController::class, 'templates']);
-                $router->post('/create-template', [GiftCardController::class, 'createTemplate']);
-                $router->post('/update-template', [GiftCardController::class, 'updateTemplate']);
-                $router->post('/delete-template', [GiftCardController::class, 'deleteTemplate']);
-
-                // Code management
-                $router->post('/generate-codes', [GiftCardController::class, 'generateCodes']);
-                $router->any('/codes', [GiftCardController::class, 'codes']);
-                $router->post('/toggle-code', [GiftCardController::class, 'toggleCode']);
-                $router->get('/export-codes', [GiftCardController::class, 'exportCodes']);
-                $router->post('/update-code', [GiftCardController::class, 'updateCode']);
-                $router->post('/delete-code', [GiftCardController::class, 'deleteCode']);
-
-                // Usage records
-                $router->any('/usages', [GiftCardController::class, 'usages']);
-
-                // Statistics
-                $router->any('/statistics', [GiftCardController::class, 'statistics']);
-                $router->get('/types', [GiftCardController::class, 'types']);
-            });
 
             // Knowledge
             $router->group([
@@ -223,18 +161,6 @@ class AdminRoute
                 $router->post('/sort', [KnowledgeController::class, 'sort']);
             });
 
-            // Payment  
-            $router->group([
-                'prefix' => 'payment'
-            ], function ($router) {
-                $router->get('/fetch', [PaymentController::class, 'fetch']);
-                $router->get('/getPaymentMethods', [PaymentController::class, 'getPaymentMethods']);
-                $router->post('/getPaymentForm', [PaymentController::class, 'getPaymentForm']);
-                $router->post('/save', [PaymentController::class, 'save']);
-                $router->post('/drop', [PaymentController::class, 'drop']);
-                $router->post('/show', [PaymentController::class, 'show']);
-                $router->post('/sort', [PaymentController::class, 'sort']);
-            });
 
             // System
             $router->group([

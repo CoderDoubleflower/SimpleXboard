@@ -186,7 +186,7 @@ return [
             ],
             'business' => [
                 'connection' => 'redis',
-                'queue' => ['default', 'order_handle'],
+                'queue' => ['default'],
                 'balance' => 'simple',
                 'minProcesses' => 1,
                 'maxProcesses' => (int) env('HORIZON_BUSINESS_MAX', 3),
@@ -198,7 +198,7 @@ return [
             ],
             'notification' => [
                 'connection' => 'redis',
-                'queue' => ['send_email', 'send_telegram', 'send_email_mass', 'node_sync'],
+                'queue' => ['send_email', 'send_telegram', 'node_sync'],
                 'balance' => 'auto',
                 'autoScalingStrategy' => 'size',
                 'minProcesses' => 1,
@@ -216,11 +216,9 @@ return [
                 'connection' => 'redis',
                 'queue' => [
                     'default',
-                    'order_handle',
                     'traffic_fetch',
                     'stat',
                     'send_email',
-                    'send_email_mass',
                     'send_telegram',
                     'user_alive_sync',
                     'node_sync'

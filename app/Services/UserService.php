@@ -5,7 +5,6 @@ namespace App\Services;
 use App\Jobs\StatServerJob;
 use App\Jobs\StatUserJob;
 use App\Jobs\TrafficFetchJob;
-use App\Models\Order;
 use App\Models\Plan;
 use App\Models\Server;
 use App\Models\User;
@@ -14,6 +13,7 @@ use App\Services\TrafficResetService;
 use App\Models\TrafficResetLog;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
 
 class UserService
 {
@@ -87,33 +87,6 @@ class UserService
         return User::all();
     }
 
-    public function addBalance(int $userId, int $balance): bool
-    {
-        $user = User::lockForUpdate()->find($userId);
-        if (!$user) {
-            return false;
-        }
-        $user->balance = $user->balance + $balance;
-        if ($user->balance < 0) {
-            return false;
-        }
-        if (!$user->save()) {
-            return false;
-        }
-        return true;
-    }
-
-    public function isNotCompleteOrderByUserId(int $userId): bool
-    {
-        $order = Order::whereIn('status', [0, 1])
-            ->where('user_id', $userId)
-            ->first();
-        if (!$order) {
-            return false;
-        }
-        return true;
-    }
-
     public function trafficFetch(Server $server, string $protocol, array $data)
     {
         $server->rate = $server->getCurrentRate();
@@ -156,131 +129,48 @@ class UserService
     }
 
     /**
-     * 创建用户
+     * Prepare a directly provisioned member; the caller persists it in a transaction.
+     * Existing members are never reassigned by this path.
      */
     public function createUser(array $data): User
     {
-        $user = new User();
+        $plan = isset($data['plan_id'])
+            ? Plan::findOrFail($data['plan_id'])
+            : Plan::internalDefault();
 
-        // 基本信息
+        if (!$plan->group_id || !$plan->group()->exists() || $plan->transfer_enable <= 0) {
+            throw ValidationException::withMessages([
+                'plan_id' => '成员配置需要有效分组和大于零的流量额度',
+            ]);
+        }
+
+        $user = new User();
         $user->email = $data['email'];
         $user->password = Hash::make($data['password'] ?? $user->email);
         $user->uuid = Helper::guid(true);
         $user->token = Helper::guid();
-
-        // 默认设置
-        $user->remind_expire = admin_setting('default_remind_expire', 1);
-        $user->remind_traffic = admin_setting('default_remind_traffic', 1);
-        $user->expired_at = null;
-
-        // 可选字段
-        $this->setOptionalFields($user, $data);
-
-        // 处理计划
-        if (isset($data['plan_id'])) {
-            $this->setPlanForUser($user, $data['plan_id'], $data['expired_at'] ?? null);
-        } else {
-            $this->setTryOutPlan(user: $user);
-        }
-
-        return $user;
-    }
-
-    /**
-     * 设置可选字段
-     */
-    private function setOptionalFields(User $user, array $data): void
-    {
-        $optionalFields = [
-            'invite_user_id',
-            'telegram_id',
-            'group_id',
-            'speed_limit',
-            'expired_at',
-            'transfer_enable'
-        ];
-
-        foreach ($optionalFields as $field) {
-            if (array_key_exists($field, $data)) {
-                $user->{$field} = $data[$field];
-            }
-        }
-    }
-
-    /**
-     * 为用户设置计划
-     */
-    private function setPlanForUser(User $user, int $planId, ?int $expiredAt = null): void
-    {
-        $plan = Plan::find($planId);
-        if (!$plan)
-            return;
-
-        $user->plan_id = $plan->id;
-        $user->group_id = $plan->group_id;
-        $user->transfer_enable = $plan->transfer_enable * 1073741824;
-        $user->speed_limit = $plan->speed_limit;
-
-        if ($expiredAt) {
-            $user->expired_at = $expiredAt;
-        }
-    }
-
-    /**
-     * 为用户分配一个新套餐或续费现有套餐
-     *
-     * @param User $user 用户模型
-     * @param Plan $plan 套餐模型
-     * @param int $validityDays 购买天数
-     * @return User 更新后的用户模型
-     */
-    public function assignPlan(User $user, Plan $plan, int $validityDays): User
-    {
         $user->plan_id = $plan->id;
         $user->group_id = $plan->group_id;
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
         $user->speed_limit = $plan->speed_limit;
         $user->device_limit = $plan->device_limit;
+        $user->expired_at = $data['expired_at'] ?? null;
+        $user->u = 0;
+        $user->d = 0;
+        $user->banned = false;
 
-        if ($validityDays > 0) {
-            $user = $this->extendSubscription($user, $validityDays);
+        foreach (['telegram_id', 'speed_limit', 'device_limit', 'transfer_enable'] as $field) {
+            if (array_key_exists($field, $data)) {
+                $user->{$field} = $data[$field];
+            }
         }
 
-        $user->save();
-        return $user;
-    }
-
-    /**
-     * 延长用户的订阅有效期
-     *
-     * @param User $user 用户模型
-     * @param int $days 延长天数
-     * @return User 更新后的用户模型
-     */
-    public function extendSubscription(User $user, int $days): User
-    {
-        $currentExpired = $user->expired_at ?? time();
-        $user->expired_at = max($currentExpired, time()) + ($days * 86400);
+        if ($user->transfer_enable <= 0) {
+            throw ValidationException::withMessages([
+                'transfer_enable' => '流量额度必须大于零；第一轮不使用零表示无限流量',
+            ]);
+        }
 
         return $user;
-    }
-
-    /**
-     * 设置试用计划
-     */
-    private function setTryOutPlan(User $user): void
-    {
-        if (!(int) admin_setting('try_out_plan_id', 0))
-            return;
-
-        $plan = Plan::find(admin_setting('try_out_plan_id'));
-        if (!$plan)
-            return;
-
-        $user->transfer_enable = $plan->transfer_enable * 1073741824;
-        $user->plan_id = $plan->id;
-        $user->group_id = $plan->group_id;
-        $user->expired_at = time() + (admin_setting('try_out_hour', 1) * 3600);
-        $user->speed_limit = $plan->speed_limit;
     }
 }

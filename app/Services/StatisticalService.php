@@ -1,8 +1,6 @@
 <?php
 namespace App\Services;
 
-use App\Models\CommissionLog;
-use App\Models\Order;
 use App\Models\Server;
 use App\Models\Stat;
 use App\Models\StatServer;
@@ -25,8 +23,11 @@ class StatisticalService
     public function __construct()
     {
         ini_set('memory_limit', -1);
-        $this->redis = Redis::connection();
+    }
 
+    private function redis()
+    {
+        return $this->redis ??= Redis::connection();
     }
 
     public function setStartAt($timestamp)
@@ -42,47 +43,32 @@ class StatisticalService
     }
 
     /**
-     * 生成统计报表
+     * Aggregate member creation and traffic without accessing retired commerce tables.
      */
     public function generateStatData(): array
     {
-        $startAt = $this->startAt;
-        $endAt = $this->endAt;
-        if (!$startAt || !$endAt) {
-            $startAt = strtotime(date('Y-m-d'));
-            $endAt = strtotime('+1 day', $startAt);
-        }
-        $data = [];
-        $data['order_count'] = Order::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->count();
-        $data['order_total'] = Order::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->sum('total_amount');
-        $data['paid_count'] = Order::where('paid_at', '>=', $startAt)
-            ->where('paid_at', '<', $endAt)
-            ->whereNotIn('status', [0, 2])
-            ->count();
-        $data['paid_total'] = Order::where('paid_at', '>=', $startAt)
-            ->where('paid_at', '<', $endAt)
-            ->whereNotIn('status', [0, 2])
-            ->sum('total_amount');
-        $commissionLogBuilder = CommissionLog::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt);
-        $data['commission_count'] = $commissionLogBuilder->count();
-        $data['commission_total'] = $commissionLogBuilder->sum('get_amount');
-        $data['register_count'] = User::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->count();
-        $data['invite_count'] = User::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->whereNotNull('invite_user_id')
-            ->count();
-        $data['transfer_used_total'] = StatServer::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->select(DB::raw('SUM(u) + SUM(d) as total'))
-            ->value('total') ?? 0;
-        return $data;
+        $startAt = $this->startAt ?? Carbon::today()->timestamp;
+        $endAt = $this->endAt ?? Carbon::tomorrow()->timestamp;
+
+        return [
+            // Legacy NOT NULL columns remain until the reviewed retirement migration.
+            // They are never calculated from commercial data.
+            'order_count' => 0,
+            'order_total' => 0,
+            'paid_count' => 0,
+            'paid_total' => 0,
+            'commission_count' => 0,
+            'commission_total' => 0,
+            'invite_count' => 0,
+            'register_count' => User::where('created_at', '>=', $startAt)
+                ->where('created_at', '<', $endAt)
+                ->count(),
+            'transfer_used_total' => StatServer::where('record_at', '>=', $startAt)
+                ->where('record_at', '<', $endAt)
+                ->where('record_type', 'd')
+                ->selectRaw('SUM(u + d) as total')
+                ->value('total') ?? 0,
+        ];
     }
 
     /**
@@ -92,8 +78,8 @@ class StatisticalService
     {
         $u_menber = "{$serverType}_{$serverId}_u"; //储存上传流量的集合成员
         $d_menber = "{$serverType}_{$serverId}_d"; //储存下载流量的集合成员
-        $this->redis->zincrby($this->statServerKey, $u, $u_menber);
-        $this->redis->zincrby($this->statServerKey, $d, $d_menber);
+        $this->redis()->zincrby($this->statServerKey, $u, $u_menber);
+        $this->redis()->zincrby($this->statServerKey, $d, $d_menber);
     }
 
     /**
@@ -103,8 +89,8 @@ class StatisticalService
     {
         $u_menber = "{$rate}_{$userId}_u"; //储存上传流量的集合成员
         $d_menber = "{$rate}_{$userId}_d"; //储存下载流量的集合成员
-        $this->redis->zincrby($this->statUserKey, $u, $u_menber);
-        $this->redis->zincrby($this->statUserKey, $d, $d_menber);
+        $this->redis()->zincrby($this->statUserKey, $u, $u_menber);
+        $this->redis()->zincrby($this->statUserKey, $d, $d_menber);
     }
 
     /**
@@ -114,7 +100,7 @@ class StatisticalService
     {
 
         $stats = [];
-        $statsUser = $this->redis->zrange($this->statUserKey, 0, -1, true);
+        $statsUser = $this->redis()->zrange($this->statUserKey, 0, -1, true);
         foreach ($statsUser as $member => $value) {
             list($rate, $uid, $type) = explode('_', $member);
             if (intval($uid) !== intval($userId))
@@ -138,7 +124,7 @@ class StatisticalService
     public function getStatUser()
     {
         $stats = [];
-        $statsUser = $this->redis->zrange($this->statUserKey, 0, -1, true);
+        $statsUser = $this->redis()->zrange($this->statUserKey, 0, -1, true);
         foreach ($statsUser as $member => $value) {
             list($rate, $uid, $type) = explode('_', $member);
             $key = "{$rate}_{$uid}";
@@ -164,7 +150,7 @@ class StatisticalService
     {
         /** @var array<string, array{server_id: int, server_type: string, u: float, d: float}> $stats */
         $stats = [];
-        $statsServer = $this->redis->zrange($this->statServerKey, 0, -1, true);
+        $statsServer = $this->redis()->zrange($this->statServerKey, 0, -1, true);
 
         foreach ($statsServer as $member => $value) {
             $parts = explode('_', $member);
@@ -197,7 +183,7 @@ class StatisticalService
      */
     public function clearStatUser()
     {
-        $this->redis->del($this->statUserKey);
+        $this->redis()->del($this->statUserKey);
     }
 
     /**
@@ -205,80 +191,56 @@ class StatisticalService
      */
     public function clearStatServer()
     {
-        $this->redis->del($this->statServerKey);
+        $this->redis()->del($this->statServerKey);
     }
 
     public function getStatRecord($type)
     {
-        switch ($type) {
-            case "paid_total": {
-                return Stat::select([
-                    '*',
-                    DB::raw('paid_total / 100 as paid_total')
-                ])
-                    ->where('record_at', '>=', $this->startAt)
-                    ->where('record_at', '<', $this->endAt)
-                    ->orderBy('record_at', 'ASC')
-                    ->get();
-            }
-            case "commission_total": {
-                return Stat::select([
-                    '*',
-                    DB::raw('commission_total / 100 as commission_total')
-                ])
-                    ->where('record_at', '>=', $this->startAt)
-                    ->where('record_at', '<', $this->endAt)
-                    ->orderBy('record_at', 'ASC')
-                    ->get();
-            }
-            case "register_count": {
-                return Stat::where('record_at', '>=', $this->startAt)
-                    ->where('record_at', '<', $this->endAt)
-                    ->orderBy('record_at', 'ASC')
-                    ->get();
-            }
+        if (!in_array($type, ['register_count', 'transfer_used_total'], true)) {
+            throw new \InvalidArgumentException('Unsupported operational statistic.');
         }
+
+        return Stat::select(['record_at', 'record_type', $type])
+            ->where('record_type', 'd')
+            ->where('record_at', '>=', $this->startAt ?? Carbon::now()->startOfMonth()->timestamp)
+            ->where('record_at', '<', $this->endAt ?? Carbon::tomorrow()->timestamp)
+            ->orderBy('record_at', 'ASC')
+            ->get();
     }
 
     public function getRanking($type, $limit = 20)
     {
-        switch ($type) {
-            case 'server_traffic_rank': {
-                return $this->buildServerTrafficRank($limit);
-            }
-            case 'user_consumption_rank': {
-                return $this->buildUserConsumptionRank($limit);
-            }
-            case 'invite_rank': {
-                return $this->buildInviteRank($limit);
-            }
-        }
+        return match ($type) {
+            'server_traffic_rank' => $this->buildServerTrafficRank($limit),
+            'user_traffic_rank' => $this->buildUserTrafficRank($limit),
+            default => throw new \InvalidArgumentException('Unsupported traffic ranking.'),
+        };
     }
 
     /**
      * 获取指定日期范围内的节点流量排行
-     * @param mixed ...$times 可选值：'today', 'tomorrow', 'last_week'，或指定日期范围，格式：timestamp
+     * @param mixed ...$times 可选值：'today', 'yesterday', 'last_week'，或指定日期范围，格式：timestamp
      * @return array
      */
 
     public static function getServerRank(...$times)
     {
-        $startAt = 0;
-        $endAt = Carbon::tomorrow()->endOfDay()->timestamp;
+        $startAt = Carbon::today()->timestamp;
+        $endAt = Carbon::tomorrow()->timestamp;
 
         if (count($times) == 1) {
             switch ($times[0]) {
                 case 'today':
                     $startAt = Carbon::today()->startOfDay()->timestamp;
-                    $endAt = Carbon::today()->endOfDay()->timestamp;
+                    $endAt = Carbon::tomorrow()->timestamp;
                     break;
                 case 'yesterday':
                     $startAt = Carbon::yesterday()->startOfDay()->timestamp;
-                    $endAt = Carbon::yesterday()->endOfDay()->timestamp;
+                    $endAt = Carbon::today()->timestamp;
                     break;
                 case 'last_week':
                     $startAt = Carbon::now()->subWeek()->startOfWeek()->timestamp;
-                    $endAt = Carbon::now()->endOfDay()->timestamp;
+                    $endAt = Carbon::tomorrow()->timestamp;
                     break;
             }
         } else if (count($times) == 2) {
@@ -286,16 +248,16 @@ class StatisticalService
             $endAt = $times[1];
         }
 
-        $statistics = Server::whereHas(
-            'stats',
-            function ($query) use ($startAt, $endAt) {
-                $query->where('record_at', '>=', $startAt)
-                    ->where('record_at', '<', $endAt)
-                    ->where('record_type', 'd');
-            }
-        )
-            ->withSum('stats as u', 'u') // 预加载 u 的总和
-            ->withSum('stats as d', 'd') // 预加载 d 的总和
+        $period = function ($query) use ($startAt, $endAt) {
+            $query->where('record_at', '>=', $startAt)
+                ->where('record_at', '<', $endAt)
+                ->where('record_type', 'd');
+        };
+
+        $statistics = Server::whereHas('stats', $period)
+            ->with('parent')
+            ->withSum(['stats as u' => $period], 'u')
+            ->withSum(['stats as d' => $period], 'd')
             ->get()
             ->map(function ($item) {
                 return [
@@ -313,30 +275,7 @@ class StatisticalService
         return $statistics;
     }
 
-    private function buildInviteRank($limit)
-    {
-        $stats = User::select([
-            'invite_user_id',
-            DB::raw('count(*) as count')
-        ])
-            ->where('created_at', '>=', $this->startAt)
-            ->where('created_at', '<', $this->endAt)
-            ->whereNotNull('invite_user_id')
-            ->groupBy('invite_user_id')
-            ->orderBy('count', 'DESC')
-            ->limit($limit)
-            ->get();
-
-        $users = User::whereIn('id', $stats->pluck('invite_user_id')->toArray())->get()->keyBy('id');
-        foreach ($stats as $k => $v) {
-            if (!isset($users[$v['invite_user_id']]))
-                continue;
-            $stats[$k]['email'] = $users[$v['invite_user_id']]['email'];
-        }
-        return $stats;
-    }
-
-    private function buildUserConsumptionRank($limit)
+    private function buildUserTrafficRank($limit)
     {
         $stats = StatUser::select([
             'user_id',
@@ -344,8 +283,9 @@ class StatisticalService
             DB::raw('sum(d) as d'),
             DB::raw('sum(u) + sum(d) as total')
         ])
-            ->where('record_at', '>=', $this->startAt)
-            ->where('record_at', '<', $this->endAt)
+            ->where('record_at', '>=', $this->startAt ?? Carbon::today()->timestamp)
+            ->where('record_at', '<', $this->endAt ?? Carbon::tomorrow()->timestamp)
+            ->where('record_type', 'd')
             ->groupBy('user_id')
             ->orderBy('total', 'DESC')
             ->limit($limit)
@@ -368,8 +308,9 @@ class StatisticalService
             DB::raw('sum(d) as d'),
             DB::raw('sum(u) + sum(d) as total')
         ])
-            ->where('record_at', '>=', $this->startAt)
-            ->where('record_at', '<', $this->endAt)
+            ->where('record_at', '>=', $this->startAt ?? Carbon::today()->timestamp)
+            ->where('record_at', '<', $this->endAt ?? Carbon::tomorrow()->timestamp)
+            ->where('record_type', 'd')
             ->groupBy('server_id', 'server_type')
             ->orderBy('total', 'DESC')
             ->limit($limit)

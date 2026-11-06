@@ -56,7 +56,6 @@ class TrafficResetLog extends Model
     public const TYPE_YEARLY = 'yearly';
     public const TYPE_FIRST_DAY_YEAR = 'first_day_year';
     public const TYPE_MANUAL = 'manual';
-    public const TYPE_PURCHASE = 'purchase';
 
     // 触发来源常量
     public const SOURCE_AUTO = 'auto';
@@ -64,8 +63,6 @@ class TrafficResetLog extends Model
     public const SOURCE_API = 'api';
     public const SOURCE_CRON = 'cron';
     public const SOURCE_USER_ACCESS = 'user_access';
-    public const SOURCE_ORDER = 'order';
-    public const SOURCE_GIFT_CARD = 'gift_card';
 
     /**
      * 获取重置类型的多语言名称
@@ -78,7 +75,6 @@ class TrafficResetLog extends Model
             self::TYPE_YEARLY => __('traffic_reset.reset_type.yearly'),
             self::TYPE_FIRST_DAY_YEAR => __('traffic_reset.reset_type.first_day_year'),
             self::TYPE_MANUAL => __('traffic_reset.reset_type.manual'),
-            self::TYPE_PURCHASE => __('traffic_reset.reset_type.purchase'),
         ];
     }
 

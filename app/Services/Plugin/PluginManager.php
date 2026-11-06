@@ -78,6 +78,15 @@ class PluginManager
             return $this->loadedPlugins[$pluginCode];
         }
 
+        // Legacy plugin directories can survive upgrades. Check their manifest
+        // before loading PHP that may depend on removed application modules.
+        $configFile = $this->getPluginPath($pluginCode) . '/config.json';
+        $config = File::exists($configFile) ? json_decode(File::get($configFile), true) : null;
+        if (!is_array($config) || ($config['type'] ?? Plugin::TYPE_FEATURE) !== Plugin::TYPE_FEATURE) {
+            Log::warning("Unsupported plugin config: {$pluginCode}");
+            return null;
+        }
+
         $pluginClass = $this->getPluginNamespace($pluginCode) . '\\Plugin';
 
         // Resolve core/user precedence before Composer can autoload an older
@@ -332,15 +341,7 @@ class PluginManager
             return false;
         }
 
-        // 验证插件类型
-        if (isset($config['type'])) {
-            $validTypes = ['feature', 'payment'];
-            if (!in_array($config['type'], $validTypes)) {
-                return false;
-            }
-        }
-
-        return true;
+        return ($config['type'] ?? Plugin::TYPE_FEATURE) === Plugin::TYPE_FEATURE;
     }
 
     /**
@@ -348,19 +349,19 @@ class PluginManager
      */
     public function enable(string $pluginCode): bool
     {
+        $dbPlugin = Plugin::query()->where('code', $pluginCode)->first();
+        if (!$dbPlugin || !$dbPlugin->isFeaturePlugin()) {
+            throw new \Exception('Plugin is not installed or unsupported: ' . $pluginCode);
+        }
+
         $plugin = $this->loadPlugin($pluginCode);
 
         if (!$plugin) {
-            Plugin::where('code', $pluginCode)->delete();
             throw new \Exception('Plugin not found: ' . $pluginCode);
         }
 
         // 获取插件配置
-        $dbPlugin = Plugin::query()
-            ->where('code', $pluginCode)
-            ->first();
-
-        if ($dbPlugin && !empty($dbPlugin->config)) {
+        if (!empty($dbPlugin->config)) {
             $values = json_decode($dbPlugin->config, true) ?: [];
             $values = $this->castConfigValuesByType($pluginCode, $values);
             $plugin->setConfig($values);
@@ -603,7 +604,7 @@ class PluginManager
             return;
         }
 
-        $enabledPlugins = Plugin::where('is_enabled', true)->get();
+        $enabledPlugins = Plugin::where('is_enabled', true)->byType(Plugin::TYPE_FEATURE)->get();
 
         foreach ($enabledPlugins as $dbPlugin) {
             try {
@@ -645,6 +646,7 @@ class PluginManager
     public function registerPluginSchedules(Schedule $schedule): void
     {
         Plugin::where('is_enabled', true)
+            ->byType(Plugin::TYPE_FEATURE)
             ->get()
             ->each(function ($dbPlugin) use ($schedule) {
                 try {
@@ -678,33 +680,11 @@ class PluginManager
         $this->initializeEnabledPlugins();
 
         $enabledPluginCodes = Plugin::where('is_enabled', true)
+            ->byType(Plugin::TYPE_FEATURE)
             ->pluck('code')
             ->all();
 
         return array_intersect_key($this->loadedPlugins, array_flip($enabledPluginCodes));
-    }
-
-    /**
-     * Get enabled plugins by type
-     */
-    public function getEnabledPluginsByType(string $type): array
-    {
-        $this->initializeEnabledPlugins();
-
-        $enabledPluginCodes = Plugin::where('is_enabled', true)
-            ->byType($type)
-            ->pluck('code')
-            ->all();
-
-        return array_intersect_key($this->loadedPlugins, array_flip($enabledPluginCodes));
-    }
-
-    /**
-     * Get enabled payment plugins
-     */
-    public function getEnabledPaymentPlugins(): array
-    {
-        return $this->getEnabledPluginsByType('payment');
     }
 
     /**
@@ -713,7 +693,7 @@ class PluginManager
     public static function installDefaultPlugins(): void
     {
         $pluginManager = app(self::class);
-        $coreDir = base_path('plugins-core');
+        $coreDir = $pluginManager->corePluginPath;
 
         if (!File::isDirectory($coreDir)) {
             return;
@@ -725,6 +705,9 @@ class PluginManager
                 continue;
             }
             $config = json_decode(File::get($configFile), true);
+            if (!is_array($config) || ($config['type'] ?? Plugin::TYPE_FEATURE) !== Plugin::TYPE_FEATURE) {
+                continue;
+            }
             $code = $config['code'] ?? null;
             if (!$code) {
                 continue;

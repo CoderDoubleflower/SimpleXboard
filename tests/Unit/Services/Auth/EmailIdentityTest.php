@@ -3,9 +3,10 @@
 namespace Tests\Unit\Services\Auth;
 
 use App\Http\Controllers\V1\Passport\CommController;
-use App\Http\Requests\Passport\AuthRegister;
+use App\Http\Requests\Passport\AuthLogin;
 use App\Http\Requests\Admin\UserGenerate;
 use App\Http\Requests\Passport\CommSendEmailVerify;
+use App\Jobs\SendEmailJob;
 use App\Models\User;
 use App\Services\Auth\LoginService;
 use App\Services\Auth\MailLinkService;
@@ -59,7 +60,7 @@ class EmailIdentityTest extends TestCase
 
     public function test_form_request_normalizes_email_before_validation(): void
     {
-        $request = AuthRegister::create('/register', 'POST', [
+        $request = AuthLogin::create('/login', 'POST', [
             'email' => 'José@例子.中国',
             'password' => 'password123',
         ]);
@@ -98,7 +99,7 @@ class EmailIdentityTest extends TestCase
         $this->assertSame(64, mb_strlen($email, 'UTF-8'));
         $this->assertGreaterThan(64, mb_strlen(User::normalizeEmail($email), 'UTF-8'));
 
-        $request = AuthRegister::create('/register', 'POST', [
+        $request = AuthLogin::create('/login', 'POST', [
             'email' => $email,
             'password' => 'password123',
         ]);
@@ -110,13 +111,6 @@ class EmailIdentityTest extends TestCase
         } catch (ValidationException $exception) {
             $this->assertArrayHasKey('email', $exception->errors());
         }
-    }
-
-    public function test_email_whitelist_matches_unicode_and_punycode_domains(): void
-    {
-        $this->assertTrue(Helper::emailSuffixVerify('user@例子.中国', ['XN--FSQU00A.XN--FIQS8S']));
-        $this->assertTrue(Helper::emailSuffixVerify('user@xn--fsqu00a.xn--fiqs8s', ['例子.中国']));
-        $this->assertFalse(Helper::emailSuffixVerify('user@example.com', ['例子.中国']));
     }
 
     public function test_database_unique_index_distinguishes_different_email_identities(): void
@@ -184,9 +178,9 @@ class EmailIdentityTest extends TestCase
     {
         admin_setting([
             'captcha_enable' => 0,
-            'email_whitelist_enable' => 0,
         ]);
         Queue::fake();
+        $this->createUser('José@example.com');
 
         $request = CommSendEmailVerify::create('/api/v1/passport/comm/sendEmailVerify', 'POST', [
             'email' => "JOSE\u{0301}@EXAMPLE.COM",
@@ -197,6 +191,46 @@ class EmailIdentityTest extends TestCase
         $identity = User::normalizeEmail('José@example.com');
         $this->assertNotNull(Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $identity)));
         $this->assertNotNull(Cache::get(CacheKey::get('LAST_SEND_EMAIL_VERIFY_TIMESTAMP', $identity)));
+        Queue::assertPushed(SendEmailJob::class, 1);
+    }
+
+    public function test_unknown_email_does_not_send_recovery_mail_or_create_a_member(): void
+    {
+        admin_setting(['captcha_enable' => 0]);
+        Queue::fake();
+
+        $request = CommSendEmailVerify::create('/api/v1/passport/comm/sendEmailVerify', 'POST', [
+            'email' => 'Unknown@EXAMPLE.COM',
+        ]);
+        $response = app(CommController::class)->sendEmailVerify($request);
+
+        $this->assertSame(200, $response->status());
+        $this->assertTrue($response->getData(true)['data']);
+        Queue::assertNothingPushed();
+        $identity = User::normalizeEmail('Unknown@EXAMPLE.COM');
+        $this->assertNull(Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $identity)));
+        $this->assertNull(Cache::get(CacheKey::get('LAST_SEND_EMAIL_VERIFY_TIMESTAMP', $identity)));
+        $this->assertDatabaseMissing('v2_user', ['email' => $identity]);
+    }
+
+    public function test_legacy_registration_email_rules_do_not_block_member_recovery(): void
+    {
+        admin_setting([
+            'captcha_enable' => 0,
+            'email_whitelist_enable' => 1,
+            'email_whitelist_suffix' => ['legacy-only.example'],
+        ]);
+        Queue::fake();
+        $this->createUser('member@example.com');
+
+        $request = CommSendEmailVerify::create('/api/v1/passport/comm/sendEmailVerify', 'POST', [
+            'email' => 'member@example.com',
+        ]);
+        $response = app(CommController::class)->sendEmailVerify($request);
+
+        $this->assertSame(200, $response->status());
+        Queue::assertPushed(SendEmailJob::class, 1);
+        $this->assertNotNull(Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', 'member@example.com')));
     }
 
     public function test_migration_normalizes_existing_email_values(): void

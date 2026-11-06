@@ -5,9 +5,7 @@ namespace App\Http\Controllers\V1\User;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\TrafficLogResource;
 use App\Models\StatUser;
-use App\Services\StatisticalService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class StatController extends Controller
 {

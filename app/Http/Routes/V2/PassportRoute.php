@@ -13,7 +13,6 @@ class PassportRoute
             'prefix' => 'passport'
         ], function ($router) {
             // Auth
-            $router->post('/auth/register', [AuthController::class, 'register']);
             $router->post('/auth/login', [AuthController::class, 'login']);
             $router->get ('/auth/token2Login', [AuthController::class, 'token2Login']);
             $router->post('/auth/forget', [AuthController::class, 'forget']);
@@ -21,7 +20,6 @@ class PassportRoute
             $router->post('/auth/loginWithMailLink', [AuthController::class, 'loginWithMailLink']);
             // Comm
             $router->post('/comm/sendEmailVerify', [CommController::class, 'sendEmailVerify']);
-            $router->post('/comm/pv', [CommController::class, 'pv']);
         });
     }
 }

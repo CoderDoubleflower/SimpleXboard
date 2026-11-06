@@ -1,109 +1,55 @@
-# Xboard
+# SimpleXboard
 
-<div align="center">
+面向个人与熟人共用的 VPS 节点和订阅管理台，基于 [Xboard](https://github.com/cedar2025/Xboard) 精简。
 
-[![Telegram](https://img.shields.io/badge/Telegram-Channel-blue)](https://t.me/XboardOfficial)
-![PHP](https://img.shields.io/badge/PHP-8.2.35+-green.svg)
-![MySQL](https://img.shields.io/badge/MySQL-5.7+-blue.svg)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## 第一轮状态
 
-</div>
+第一轮已移除支付、订单、优惠券、礼品卡、推广返佣、提现、工单、公开注册、试用和商业邮件提醒。管理员可以直接创建可用成员，每人拥有独立的订阅 token 和 UUID，不需要购买或订单激活。
 
-## 📖 Introduction
+保留管理员认证、成员管理、订阅生成、节点与机器管理、VLESS + REALITY、Hysteria2 及原有其他协议、流量统计、在线状态、节点增量同步、日志和备份。
 
-Xboard is a modern panel system built on Laravel 11, focusing on providing a clean and efficient user experience.
+套餐与分组暂时作为内部配置保留。全新成员默认使用隐藏的内部配置：**1024 GiB（1 TiB）、每月 1 日重置、长期有效**。现有成员的凭据、额度、到期时间和节点分组不由本轮迁移重写。创建节点时需要为它选择对应成员分组；不会把旧节点自动开放给默认组。
 
-## ✨ Features
+**第一轮交接和验证记录：[docs/round-1-handoff.md](docs/round-1-handoff.md)**。第二轮须从本轮实际分支/提交继续。
 
-- 🚀 Built with Laravel 12 + Octane for significant performance gains
-- 🎨 Redesigned admin interface (React + Shadcn UI)
-- 📱 Modern user frontend (Vue3 + TypeScript)
-- 🐳 Ready-to-use Docker deployment solution
-- 🎯 Optimized system architecture for better maintainability
+## 创建成员
 
-## 🚀 Quick Start
+现有管理界面“生成用户”路径继续可用，未选择内部套餐时会分配默认配置。也新增管理员 API：
 
-```bash
-git clone -b compose --depth 1 https://github.com/cedar2025/Xboard && \
-cd Xboard && \
-docker compose run -it --rm \
-    -e ENABLE_SQLITE=true \
-    -e ENABLE_REDIS=true \
-    -e ADMIN_ACCOUNT=admin@demo.com \
-    xboard php artisan xboard:install && \
-docker compose up -d
+```http
+POST /api/v2/{管理路径}/user/create
+Authorization: Bearer {管理员会话令牌}
+Content-Type: application/json
+
+{
+  "email": "friend@example.com",
+  "password": "replace-with-a-strong-password"
+}
 ```
 
-> After installation, visit: http://SERVER_IP:7001  
-> ⚠️ Make sure to save the admin credentials shown during installation
+返回成员信息和独立订阅地址。可选 `plan_id` 复用已有配置；`transfer_enable` 使用 **bytes**，必须大于零；`expired_at` 为 Unix 秒时间戳，省略或 `null` 表示长期有效。内部 Plan 的额度单位沿用 GiB。
 
-## 📖 Documentation
+## 运行与升级
 
-### 🔄 Upgrade Notice
-> 🚨 **Important:** This version involves significant changes. Please strictly follow the upgrade documentation and backup your database before upgrading. Note that upgrading and migration are different processes, do not confuse them.
+运行环境仍使用 PHP、Laravel 12、Redis、Horizon 与 Octane。本轮没有改变节点通信架构。
 
-### Development Guides
-- [Plugin Development Guide](./docs/en/development/plugin-development-guide.md) - Complete guide for developing XBoard plugins
+从本仓库的第一轮分支取代码后，按交接文档执行依赖安装、普通 migration 与服务重启。普通 migration 保留商业历史数据；永久清理需要显式执行 `database/cleanup` 中的独立迁移。
 
-### Deployment Guides
+原项目的安装文档和 Compose 示例暂作环境参考，其中的 `cedar2025/xboard` 镜像仍是上游完整版本。**运行 SimpleXboard 时应使用本仓库代码构建的镜像或源码，不能直接用上游镜像替代。** 本轮未发布镜像或部署服务器，构建命令见交接文档。
 
-PHP **8.2.35 or later** is required. Use the latest security patch for your PHP release series. Docker deployments must meet this requirement inside the container.
+## 前端边界
 
-- [Deploy with 1Panel](./docs/en/installation/1panel.md)
-- [Deploy with Docker Compose](./docs/en/installation/docker-compose.md)
-- [Deploy with aaPanel](./docs/en/installation/aapanel.md)
-- [Deploy with aaPanel + Docker](./docs/en/installation/aapanel-docker.md) (Recommended)
+管理端 `public/assets/admin` 是编译产物子模块，用户主题也是已打包资源。第一轮没有手改压缩 JS，旧界面中的套餐销售、订单、推广、工单等导航可能仍出现，对应后端入口已退役。第二轮会处理前端入口和彻底去掉套餐/分组。
 
-### Migration Guides
-- [Migrate from v2board dev](./docs/en/migration/v2board-dev.md)
-- [Migrate from v2board 1.7.4](./docs/en/migration/v2board-1.7.4.md)
-- [Migrate from v2board 1.7.3](./docs/en/migration/v2board-1.7.3.md)
+## 开发验证
 
-## 🛠️ Tech Stack
-
-- Backend: Laravel 11 + Octane
-- Admin Panel: React + Shadcn UI + TailwindCSS
-- User Frontend: Vue3 + TypeScript + NaiveUI
-- Deployment: Docker + Docker Compose
-- Caching: Redis + Octane Cache
-
-## 📷 Preview
-![Admin Preview](./docs/images/admin.png)
-
-![User Preview](./docs/images/user.png)
-
-## ⚠️ Disclaimer
-
-This project is for learning and communication purposes only. Users are responsible for any consequences of using this project.
-
-## ❤️ Support The Project
-
-If this project has helped you, donations are appreciated. They help support ongoing maintenance and would make me very happy.
-
-TRC20: `TLypStEWsVrj6Wz9mCxbXffqgt5yz3Y4XB`
-
-## 🌟 Maintenance Notice
-
-This project is currently under light maintenance. We will:
-- Fix critical bugs and security issues
-- Review and merge important pull requests
-- Provide necessary updates for compatibility
-
-However, new feature development may be limited.
-
-## 🔔 Important Notes
-
-1. Restart required after modifying admin path:
 ```bash
-docker compose restart
+composer install
+php vendor/bin/phpunit
 ```
 
-2. For aaPanel installations, restart the Octane daemon process
+测试默认使用 SQLite 内存数据库和隔离的缓存。Redis 消息相关测试显式模拟消息边界，不能代替真实 VPS、节点代理和客户端连接测试。
 
-## 🤝 Contributing
+## 许可证与来源
 
-Issues and Pull Requests are welcome to help improve the project.
-
-## 📈 Star History
-
-[![Stargazers over time](https://starchart.cc/cedar2025/Xboard.svg)](https://starchart.cc/cedar2025/Xboard)
+延续上游 [MIT License](LICENSE)。保留原项目的节点协议实现和运维架构，感谢 Xboard 及其贡献者。

@@ -34,6 +34,12 @@ class SendEmailJob implements ShouldQueue
      */
     public function handle()
     {
+        // Retire queued campaigns/reminders left behind by older releases.
+        // Account verification, password recovery and mail login still use this queue.
+        if (!in_array($this->params['template_name'] ?? null, ['verify', 'mailLogin'], true)) {
+            return;
+        }
+
         $mailLog = MailService::sendEmail($this->params);
         if ($mailLog['error']) {
             $this->release(); //发送失败将触发重试

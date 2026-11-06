@@ -4,7 +4,6 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\Log;
 
 /**
  * @property int $id
@@ -26,17 +25,10 @@ class Plugin extends Model
     protected $table = 'v2_plugins';
 
     const TYPE_FEATURE = 'feature';
-    const TYPE_PAYMENT = 'payment';
 
     // 默认不可删除的插件列表
     const PROTECTED_PLUGINS = [
-        'epay',           // EPay
-        'alipay_f2f',     // Alipay F2F
-        'btcpay',         // BTCPay
-        'coinbase',       // Coinbase
-        'coin_payments',  // CoinPayments
-        'mgate',          // MGate
-        'telegram',       // Telegram
+        'telegram', // Telegram
     ];
 
     protected $guarded = [
@@ -57,11 +49,6 @@ class Plugin extends Model
     public function isFeaturePlugin(): bool
     {
         return $this->type === self::TYPE_FEATURE;
-    }
-
-    public function isPaymentPlugin(): bool
-    {
-        return $this->type === self::TYPE_PAYMENT;
     }
 
     public function isProtected(): bool

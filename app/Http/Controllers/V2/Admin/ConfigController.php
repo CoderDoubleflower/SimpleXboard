@@ -8,7 +8,6 @@ use App\Models\SubscribeTemplate;
 use App\Services\MailService;
 use App\Services\TelegramService;
 use App\Services\ThemeService;
-use App\Utils\Dict;
 use Illuminate\Http\Request;
 
 class ConfigController extends Controller
@@ -88,47 +87,22 @@ class ConfigController extends Controller
     private function getConfigMappings(): array
     {
         return [
-            'invite' => [
-                'invite_force' => (bool) admin_setting('invite_force', 0),
-                'invite_commission' => admin_setting('invite_commission', 10),
-                'invite_gen_limit' => admin_setting('invite_gen_limit', 5),
-                'invite_never_expire' => (bool) admin_setting('invite_never_expire', 0),
-                'commission_first_time_enable' => (bool) admin_setting('commission_first_time_enable', 1),
-                'commission_auto_check_enable' => (bool) admin_setting('commission_auto_check_enable', 1),
-                'commission_withdraw_limit' => admin_setting('commission_withdraw_limit', 100),
-                'commission_withdraw_method' => admin_setting('commission_withdraw_method', Dict::WITHDRAW_METHOD_WHITELIST_DEFAULT),
-                'withdraw_close_enable' => (bool) admin_setting('withdraw_close_enable', 0),
-                'commission_distribution_enable' => (bool) admin_setting('commission_distribution_enable', 0),
-                'commission_distribution_l1' => admin_setting('commission_distribution_l1'),
-                'commission_distribution_l2' => admin_setting('commission_distribution_l2'),
-                'commission_distribution_l3' => admin_setting('commission_distribution_l3')
-            ],
+            // Empty groups keep older admin bundles readable without exposing retired settings.
+            'invite' => [],
             'site' => [
                 'logo' => admin_setting('logo'),
                 'force_https' => (int) admin_setting('force_https', 0),
-                'stop_register' => (int) admin_setting('stop_register', 0),
+                'stop_register' => 1,
                 'app_name' => admin_setting('app_name', 'XBoard'),
                 'app_description' => admin_setting('app_description', 'XBoard is best!'),
                 'app_url' => admin_setting('app_url'),
                 'subscribe_url' => admin_setting('subscribe_url'),
-                'try_out_plan_id' => (int) admin_setting('try_out_plan_id', 0),
-                'try_out_hour' => (int) admin_setting('try_out_hour', 1),
                 'tos_url' => admin_setting('tos_url'),
-                'currency' => admin_setting('currency', 'CNY'),
-                'currency_symbol' => admin_setting('currency_symbol', '¥'),
-                'ticket_must_wait_reply' => (bool) admin_setting('ticket_must_wait_reply', 0),
             ],
             'subscribe' => [
-                'plan_change_enable' => (bool) admin_setting('plan_change_enable', 1),
                 'reset_traffic_method' => (int) admin_setting('reset_traffic_method', 0),
-                'surplus_enable' => (bool) admin_setting('surplus_enable', 1),
-                'new_order_event_id' => (int) admin_setting('new_order_event_id', 0),
-                'renew_order_event_id' => (int) admin_setting('renew_order_event_id', 0),
-                'change_order_event_id' => (int) admin_setting('change_order_event_id', 0),
                 'show_info_to_server_enable' => (bool) admin_setting('show_info_to_server_enable', 0),
                 'show_protocol_to_server_enable' => (bool) admin_setting('show_protocol_to_server_enable', 0),
-                'default_remind_expire' => (bool) admin_setting('default_remind_expire', 1),
-                'default_remind_traffic' => (bool) admin_setting('default_remind_traffic', 1),
                 'subscribe_path' => admin_setting('subscribe_path', 's'),
             ],
             'frontend' => [
@@ -153,7 +127,6 @@ class ConfigController extends Controller
                 'email_password' => admin_setting('email_password'),
                 'email_encryption' => admin_setting('email_encryption'),
                 'email_from_address' => admin_setting('email_from_address'),
-                'remind_mail_enable' => (bool) admin_setting('remind_mail_enable', false),
             ],
             'telegram' => [
                 'telegram_bot_enable' => (bool) admin_setting('telegram_bot_enable', 0),
@@ -161,21 +134,10 @@ class ConfigController extends Controller
                 'telegram_webhook_url' => admin_setting('telegram_webhook_url'),
                 'telegram_discuss_link' => admin_setting('telegram_discuss_link')
             ],
-            'app' => [
-                'windows_version' => admin_setting('windows_version', ''),
-                'windows_download_url' => admin_setting('windows_download_url', ''),
-                'macos_version' => admin_setting('macos_version', ''),
-                'macos_download_url' => admin_setting('macos_download_url', ''),
-                'android_version' => admin_setting('android_version', ''),
-                'android_download_url' => admin_setting('android_download_url', '')
-            ],
+            'app' => [],
             'safe' => [
-                'email_verify' => (bool) admin_setting('email_verify', 0),
                 'safe_mode_enable' => (bool) admin_setting('safe_mode_enable', 0),
                 'secure_path' => admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))),
-                'email_whitelist_enable' => (bool) admin_setting('email_whitelist_enable', 0),
-                'email_whitelist_suffix' => admin_setting('email_whitelist_suffix', Dict::EMAIL_WHITELIST_SUFFIX_DEFAULT),
-                'email_gmail_limit_enable' => (bool) admin_setting('email_gmail_limit_enable', 0),
                 'captcha_enable' => (bool) admin_setting('captcha_enable', 0),
                 'captcha_type' => admin_setting('captcha_type', 'recaptcha'),
                 'recaptcha_key' => admin_setting('recaptcha_key', ''),
@@ -185,9 +147,6 @@ class ConfigController extends Controller
                 'recaptcha_v3_score_threshold' => admin_setting('recaptcha_v3_score_threshold', 0.5),
                 'turnstile_secret_key' => admin_setting('turnstile_secret_key', ''),
                 'turnstile_site_key' => admin_setting('turnstile_site_key', ''),
-                'register_limit_by_ip_enable' => (bool) admin_setting('register_limit_by_ip_enable', 0),
-                'register_limit_count' => admin_setting('register_limit_count', 3),
-                'register_limit_expire' => admin_setting('register_limit_expire', 60),
                 'password_limit_enable' => (bool) admin_setting('password_limit_enable', 1),
                 'password_limit_count' => admin_setting('password_limit_count', 5),
                 'password_limit_expire' => admin_setting('password_limit_expire', 60),
@@ -210,6 +169,7 @@ class ConfigController extends Controller
 
     public function save(ConfigSave $request)
     {
+        // Only active settings are writable, including when an older bundle submits retired keys.
         $data = $request->validated();
 
         $templateKeys = [

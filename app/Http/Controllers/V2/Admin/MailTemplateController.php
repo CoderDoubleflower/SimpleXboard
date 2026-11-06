@@ -126,8 +126,6 @@ class MailTemplateController extends Controller
         return match ($name) {
             'verify' => "{$appName} - 验证码测试",
             'notify' => "{$appName} - 通知测试",
-            'remindExpire' => "{$appName} - 到期提醒测试",
-            'remindTraffic' => "{$appName} - 流量提醒测试",
             'mailLogin' => "{$appName} - 登录链接测试",
             default => "{$appName} - 邮件测试",
         };
@@ -149,14 +147,6 @@ class MailTemplateController extends Controller
                 'content' => '这是一封测试通知邮件。',
                 'url' => $appUrl,
             ],
-            'remindExpire' => [
-                'name' => $appName,
-                'url' => $appUrl,
-            ],
-            'remindTraffic' => [
-                'name' => $appName,
-                'url' => $appUrl,
-            ],
             'mailLogin' => [
                 'name' => $appName,
                 'link' => $appUrl . '/login?token=test-token',
@@ -172,8 +162,6 @@ class MailTemplateController extends Controller
         return match ($name) {
             'verify' => "{$appName} - 邮箱验证码",
             'notify' => "{$appName} - 站点通知",
-            'remindExpire' => "{$appName} - 服务即将到期",
-            'remindTraffic' => "{$appName} - 流量使用提醒",
             'mailLogin' => "{$appName} - 邮件登录",
             default => "{$appName}",
         };
@@ -257,8 +245,6 @@ HTML;
         return match ($name) {
             'verify' => $layout('邮箱验证码', '您的验证码是：{{code}}，请在 5 分钟内进行验证。如果该验证码不为您本人申请，请无视。'),
             'notify' => $layout('网站通知', '{{content}}'),
-            'remindExpire' => $layout('服务到期提醒', '您的服务即将在24小时内到期，如需继续使用请及时续费。'),
-            'remindTraffic' => $layout('流量使用提醒', '您的流量使用已达到80%，请注意流量使用情况。'),
             'mailLogin' => $layout('登入到{{name}}', '您正在登入到{{name}}, 请在 5 分钟内点击下方链接进行登入。如果您未授权该登入请求，请无视。<a href="{{link}}">{{link}}</a>'),
             default => $layout('通知', '{{content}}'),
         };
