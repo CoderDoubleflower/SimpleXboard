@@ -2,13 +2,10 @@
 
 namespace Plugin\Telegram;
 
-use App\Models\Order;
-use App\Models\Ticket;
 use App\Models\User;
 use App\Services\Plugin\AbstractPlugin;
 use App\Services\Plugin\HookManager;
 use App\Services\TelegramService;
-use App\Services\TicketService;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\Log;
 
@@ -34,78 +31,6 @@ class Plugin extends AbstractPlugin
     $this->listen('telegram.message.unhandled', [$this, 'handleUnknownCommand'], 10);
     $this->listen('telegram.message.error', [$this, 'handleError'], 10);
     $this->filter('telegram.bot.commands', [$this, 'addBotCommands'], 10);
-    $this->listen('ticket.create.after', [$this, 'sendTicketNotify'], 10);
-    $this->listen('ticket.reply.user.after', [$this, 'sendTicketNotify'], 10);
-    $this->listen('payment.notify.success', [$this, 'sendPaymentNotify'], 10);
-  }
-
-  public function sendPaymentNotify(Order $order): void
-  {
-    if (!$this->getConfig('enable_payment_notify', true)) {
-      return;
-    }
-
-    $payment = $order->payment;
-    if (!$payment) {
-      Log::warning('支付通知失败：订单关联的支付方式不存在', ['order_id' => $order->id]);
-      return;
-    }
-
-    $message = sprintf(
-      "💰成功收款%s元\n" .
-      "———————————————\n" .
-      "支付接口：%s\n" .
-      "支付渠道：%s\n" .
-      "本站订单：`%s`",
-      $order->total_amount / 100,
-      Helper::escapeMarkdown($payment->payment),
-      Helper::escapeMarkdown($payment->name),
-      $order->trade_no
-    );
-    $this->telegramService->sendMessageWithAdmin($message, true);
-  }
-
-  public function sendTicketNotify(Ticket $ticket): void
-  {
-    if (!$this->getConfig('enable_ticket_notify', true)) {
-      return;
-    }
-
-    $message = $ticket->messages()->latest()->first();
-    $user = User::find($ticket->user_id);
-    if (!$user)
-      return;
-    $user->load('plan');
-    $transfer_enable = $this->transferToGBString($user->transfer_enable);
-    $remaining_traffic = $this->transferToGBString($user->transfer_enable - $user->u - $user->d);
-    $u = $this->transferToGBString($user->u);
-    $d = $this->transferToGBString($user->d);
-    $expired_at = $user->expired_at ? date('Y-m-d H:i:s', $user->expired_at) : '长期有效';
-    $money = $user->balance / 100;
-    $affmoney = $user->commission_balance / 100;
-    $plan = $user->plan;
-    $ip = request()?->ip() ?? '';
-    $region = $ip ? (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? (new \Ip2Region())->simple($ip) : 'NULL') : '';
-    $TGmessage = "📮 *工单提醒* #{$ticket->id}\n";
-    $TGmessage .= "━━━━━━━━━━━━━━━━━━━━\n";
-    $TGmessage .= "📧 邮箱: `{$user->email}`\n";
-    $TGmessage .= "📍 位置: `{$region}`\n";
-
-    if ($plan) {
-      $TGmessage .= "📦 套餐: `" . Helper::escapeMarkdown($plan->name) . "`\n";
-      $TGmessage .= "📊 流量: `{$remaining_traffic}G / {$transfer_enable}G` (剩余/总计)\n";
-      $TGmessage .= "⬆️⬇️ 已用: `{$u}G / {$d}G`\n";
-      $TGmessage .= "⏰ 到期: `{$expired_at}`\n";
-    } else {
-      $TGmessage .= "📦 套餐: `未订购任何套餐`\n";
-    }
-
-    $TGmessage .= "💰 余额: `{$money}元`\n";
-    $TGmessage .= "💸 佣金: `{$affmoney}元`\n";
-    $TGmessage .= "━━━━━━━━━━━━━━━━━━━━\n";
-    $TGmessage .= "📝 *主题*: `" . Helper::escapeMarkdown($ticket->subject) . "`\n";
-    $TGmessage .= "💬 *内容*: `" . Helper::escapeMarkdown($message->message) . "`";
-    $this->telegramService->sendMessageWithAdmin($TGmessage, true);
   }
 
   protected function registerDefaultCommands(): void
@@ -114,7 +39,6 @@ class Plugin extends AbstractPlugin
       $this->registerTelegramCommand($command, [$this, $config['handler']]);
     }
 
-    $this->registerReplyHandler('/(📮.*?工单提醒.*?#?|工单ID: ?)(\\d+)/', [$this, 'handleTicketReply']);
   }
 
   public function registerTelegramCommand(string $command, callable $handler): void
@@ -382,36 +306,6 @@ class Plugin extends AbstractPlugin
     }
 
     $this->sendMessage($msg, '解绑成功');
-  }
-
-  public function handleTicketReply(object $msg, array $matches): void
-  {
-    $user = $this->getBoundUser($msg);
-    if (!$user) {
-      return;
-    }
-
-    if (!isset($matches[2]) || !is_numeric($matches[2])) {
-      Log::warning('Telegram 工单回复正则未匹配到工单ID', ['matches' => $matches, 'msg' => $msg]);
-      $this->sendMessage($msg, '未能识别工单ID，请直接回复工单提醒消息。');
-      return;
-    }
-
-    $ticketId = (int) $matches[2];
-    $ticket = Ticket::where('id', $ticketId)->first();
-    if (!$ticket) {
-      $this->sendMessage($msg, '工单不存在');
-      return;
-    }
-
-    $ticketService = new TicketService();
-    $ticketService->replyByAdmin(
-      $ticketId,
-      $msg->text,
-      $user->id
-    );
-
-    $this->sendMessage($msg, "工单 #{$ticketId} 回复成功");
   }
 
   /**

@@ -14,13 +14,12 @@ class TrafficLogResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
-        $data = [
+        return [
             "d" => $this['d'],
             "u" => $this['u'],
             "record_at" =>  $this['record_at'],
             "server_rate" => $this['server_rate'],
+            "user_id" => $this['user_id'],
         ];
-        if(!config('hidden_features.enable_exposed_user_count_fix')) $data['user_id']= $this['user_id'];
-        return $data;
     }
 }

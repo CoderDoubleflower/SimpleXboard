@@ -24,16 +24,6 @@ class MailTemplate extends Model
             'required_vars' => ['content'],
             'optional_vars' => ['name', 'url'],
         ],
-        'remindExpire' => [
-            'label' => '到期提醒',
-            'required_vars' => [],
-            'optional_vars' => ['name', 'url'],
-        ],
-        'remindTraffic' => [
-            'label' => '流量提醒',
-            'required_vars' => [],
-            'optional_vars' => ['name', 'url'],
-        ],
         'mailLogin' => [
             'label' => '邮件登录',
             'required_vars' => ['link'],

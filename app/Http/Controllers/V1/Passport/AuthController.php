@@ -7,26 +7,21 @@ use App\Models\User;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Passport\AuthForget;
 use App\Http\Requests\Passport\AuthLogin;
-use App\Http\Requests\Passport\AuthRegister;
 use App\Services\Auth\LoginService;
 use App\Services\Auth\MailLinkService;
-use App\Services\Auth\RegisterService;
 use App\Services\AuthService;
 use Illuminate\Http\Request;
 
 class AuthController extends Controller
 {
     protected MailLinkService $mailLinkService;
-    protected RegisterService $registerService;
     protected LoginService $loginService;
 
     public function __construct(
         MailLinkService $mailLinkService,
-        RegisterService $registerService,
         LoginService $loginService
     ) {
         $this->mailLinkService = $mailLinkService;
-        $this->registerService = $registerService;
         $this->loginService = $loginService;
     }
 
@@ -54,21 +49,6 @@ class AuthController extends Controller
         }
 
         return $this->success($result);
-    }
-
-    /**
-     * 用户注册
-     */
-    public function register(AuthRegister $request)
-    {
-        [$success, $result] = $this->registerService->register($request);
-
-        if (!$success) {
-            return $this->fail($result);
-        }
-
-        $authService = new AuthService($result);
-        return $this->success($authService->generateAuthData());
     }
 
     /**

@@ -8,8 +8,6 @@ use App\Services\TrafficResetService;
 
 class UserObserver
 {
-  public bool $afterCommit = true;
-
   public function __construct(
     private readonly TrafficResetService $trafficResetService
   ) {
@@ -17,8 +15,8 @@ class UserObserver
 
   public function updated(User $user): void
   {
-    // With $afterCommit = true, isDirty() is always false after commit.
-    // Use wasChanged() to detect what was actually modified.
+    // Capture the old group before Eloquent syncs originals. Queue delivery waits
+    // for commit, so a rolled-back member update can never reach the nodes.
     $syncFields = ['group_id', 'uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd', 'plan_id'];
     $needsSync = $user->wasChanged($syncFields);
     $oldGroupId = $user->wasChanged('group_id') ? $user->getOriginal('group_id') : null;
@@ -28,20 +26,20 @@ class UserObserver
     }
 
     if ($needsSync) {
-      NodeUserSyncJob::dispatch($user->id, 'updated', $oldGroupId);
+      NodeUserSyncJob::dispatch($user->id, 'updated', $oldGroupId)->afterCommit();
     }
   }
 
   public function created(User $user): void
   {
     $this->recalculateNextResetAt($user);
-    NodeUserSyncJob::dispatch($user->id, 'created');
+    NodeUserSyncJob::dispatch($user->id, 'created')->afterCommit();
   }
 
   public function deleted(User $user): void
   {
     if ($user->group_id) {
-      NodeUserSyncJob::dispatch($user->id, 'deleted', $user->group_id);
+      NodeUserSyncJob::dispatch($user->id, 'deleted', $user->group_id)->afterCommit();
     }
   }
 

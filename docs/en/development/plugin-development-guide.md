@@ -136,23 +136,13 @@ $enabled = $this->isPluginEnabled();
 
 ### Popular Hooks (Recommended to follow)
 
-XBoard has built-in hooks for many business-critical nodes. Plugin developers can flexibly extend through `filter` or `listen` methods. Here are the most commonly used and valuable hooks:
+XBoard has built-in hooks for account access, member traffic and node operations. Plugin developers can flexibly extend through `filter` or `listen` methods. Here are the most commonly used and valuable hooks:
 
 | Hook Name                 | Type   | Typical Parameters       | Description      |
 | ------------------------- | ------ | ----------------------- | ---------------- |
-| user.register.before      | action | Request                 | Before user registration |
-| user.register.after       | action | User                    | After user registration |
 | user.login.after          | action | User                    | After user login |
 | user.password.reset.after | action | User                    | After password reset |
-| order.cancel.before       | action | Order                   | Before order cancellation |
-| order.cancel.after        | action | Order                   | After order cancellation |
-| payment.notify.before     | action | method, uuid, request   | Before payment callback |
-| payment.notify.verified   | action | array                   | Payment callback verification successful |
-| payment.notify.failed     | action | method, uuid, request   | Payment callback verification failed |
 | traffic.reset.after       | action | User                    | After traffic reset |
-| ticket.create.after       | action | Ticket                  | After ticket creation |
-| ticket.reply.user.after   | action | Ticket                  | After user replies to ticket |
-| ticket.close.after        | action | Ticket                  | After ticket closure |
 
 > ⚡️ The hook system will continue to expand. Developers can always follow this documentation and the `php artisan hook:list` command to get the latest supported hooks.
 

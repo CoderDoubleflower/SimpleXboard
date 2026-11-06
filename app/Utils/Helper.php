@@ -43,19 +43,6 @@ class Helper
         return md5(vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4)) . '-' . time());
     }
 
-    public static function generateOrderNo(): string
-    {
-        $randomChar = mt_rand(10000, 99999);
-        return date('YmdHms') . substr(microtime(), 2, 6) . $randomChar;
-    }
-
-    public static function exchange($from, $to)
-    {
-        $result = file_get_contents('https://api.exchangerate.host/latest?symbols=' . $to . '&base=' . $from);
-        $result = json_decode($result, true);
-        return $result['rates'][$to];
-    }
-
     public static function randomChar($len, $special = false)
     {
         $chars = array(
@@ -101,35 +88,6 @@ class Helper
             case 'sha256salt': return hash('sha256', $password . $salt) === $hash;
             default: return password_verify($password, $hash);
         }
-    }
-
-    public static function emailSuffixVerify($email, $suffixs)
-    {
-        $suffix = substr(strrchr($email, '@') ?: '', 1);
-        if (!$suffix) {
-            return false;
-        }
-
-        $normalizeDomain = static function (string $domain): string {
-            $domain = trim($domain);
-            $ascii = idn_to_ascii(
-                $domain,
-                IDNA_USE_STD3_RULES | IDNA_CHECK_BIDI | IDNA_CHECK_CONTEXTJ | IDNA_NONTRANSITIONAL_TO_ASCII,
-                INTL_IDNA_VARIANT_UTS46
-            );
-
-            return $ascii === false ? mb_strtolower($domain, 'UTF-8') : strtolower($ascii);
-        };
-
-        if (!is_array($suffixs)) {
-            $suffixs = preg_split('/,/', $suffixs) ?: [];
-        }
-
-        return in_array(
-            $normalizeDomain($suffix),
-            array_map($normalizeDomain, $suffixs),
-            true
-        );
     }
 
     public static function trafficConvert(float $byte)
@@ -289,15 +247,6 @@ class Helper
         return strtr(rawurlencode($str), $revert);
     }
 
-    public static function getEmailSuffix(): array|bool
-    {
-        $suffix = admin_setting('email_whitelist_suffix', Dict::EMAIL_WHITELIST_SUFFIX_DEFAULT);
-        if (!is_array($suffix)) {
-            return preg_split('/,/', $suffix);
-        }
-        return $suffix;
-    }
-    
     /**
      * convert the transfer_enable to GB
      * @param float $transfer_enable

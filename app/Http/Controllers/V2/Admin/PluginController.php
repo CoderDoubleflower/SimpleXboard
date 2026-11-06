@@ -8,7 +8,6 @@ use App\Services\Plugin\PluginManager;
 use App\Services\Plugin\PluginConfigService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Str;
 
 class PluginController extends Controller
 {
@@ -35,12 +34,6 @@ class PluginController extends Controller
                     'label' => '功能',
                     'description' => '提供功能扩展的插件，如Telegram登录、邮件通知等',
                     'icon' => '🔧'
-                ],
-                [
-                    'value' => Plugin::TYPE_PAYMENT,
-                    'label' => '支付方式',
-                    'description' => '提供支付接口的插件，如支付宝、微信支付等',
-                    'icon' => '💳'
                 ]
             ]
         ]);
@@ -52,10 +45,11 @@ class PluginController extends Controller
     public function index(Request $request)
     {
         $type = $request->query('type');
+        if ($type && $type !== Plugin::TYPE_FEATURE) {
+            return response()->json(['data' => []]);
+        }
 
-        $installedPlugins = Plugin::when($type, function ($query) use ($type) {
-            return $query->byType($type);
-        })
+        $installedPlugins = Plugin::byType(Plugin::TYPE_FEATURE)
             ->get()
             ->keyBy('code')
             ->toArray();
@@ -74,7 +68,7 @@ class PluginController extends Controller
                     continue;
                 }
                 $config = json_decode(File::get($configFile), true);
-                if (!$config || !isset($config['code'])) {
+                if (!is_array($config) || !isset($config['code'])) {
                     continue;
                 }
                 $code = $config['code'];
@@ -85,7 +79,7 @@ class PluginController extends Controller
                 $seenCodes[$code] = true;
 
                 $pluginType = $config['type'] ?? Plugin::TYPE_FEATURE;
-                if ($type && $pluginType !== $type) {
+                if ($pluginType !== Plugin::TYPE_FEATURE) {
                     continue;
                 }
 
@@ -246,6 +240,7 @@ class PluginController extends Controller
         ]);
 
         try {
+            $this->assertFeaturePlugin($request->input('code'));
             $config = $this->configService->getConfig($request->input('code'));
             return response()->json([
                 'data' => $config
@@ -268,6 +263,7 @@ class PluginController extends Controller
         ]);
 
         try {
+            $this->assertFeaturePlugin($request->input('code'));
             $this->configService->updateConfig(
                 $request->input('code'),
                 $request->input('config')
@@ -280,6 +276,23 @@ class PluginController extends Controller
             return response()->json([
                 'message' => '配置更新失败：' . $e->getMessage()
             ], 400);
+        }
+    }
+
+    /**
+     * Keep retired plugin settings archived even when their files survive an upgrade.
+     */
+    private function assertFeaturePlugin(string $code): void
+    {
+        $configFile = $this->pluginManager->getPluginPath($code) . '/config.json';
+        $config = File::exists($configFile) ? json_decode(File::get($configFile), true) : null;
+        if (!is_array($config) || ($config['type'] ?? Plugin::TYPE_FEATURE) !== Plugin::TYPE_FEATURE) {
+            throw new \InvalidArgumentException('插件不存在或类型不受支持');
+        }
+
+        $plugin = Plugin::where('code', $code)->first();
+        if ($plugin && !$plugin->isFeaturePlugin()) {
+            throw new \InvalidArgumentException('插件类型不受支持');
         }
     }
 

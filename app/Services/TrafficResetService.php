@@ -86,7 +86,7 @@ class TrafficResetService
       || $user->plan->reset_traffic_method === Plan::RESET_TRAFFIC_NEVER
       || ($user->plan->reset_traffic_method === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM
         && (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY) === Plan::RESET_TRAFFIC_NEVER)
-      || $user->expired_at === NULL
+      || ($user->expired_at === null && !$user->plan->is_internal)
     ) {
       return null;
     }
@@ -127,6 +127,10 @@ class TrafficResetService
    */
   private function getNextMonthlyReset(User $user, Carbon $from): Carbon
   {
+    if ($user->expired_at === null) {
+      return $this->getNextMonthFirstDay($from);
+    }
+
     $expiredAt = Carbon::createFromTimestamp($user->expired_at, config('app.timezone'));
     $resetDay = $expiredAt->day;
     $resetTime = [$expiredAt->hour, $expiredAt->minute, $expiredAt->second];
@@ -168,6 +172,10 @@ class TrafficResetService
    */
   private function getNextYearlyReset(User $user, Carbon $from): Carbon
   {
+    if ($user->expired_at === null) {
+      return $this->getNextYearFirstDay($from);
+    }
+
     $expiredAt = Carbon::createFromTimestamp($user->expired_at, config('app.timezone'));
     $resetMonth = $expiredAt->month;
     $resetDay = $expiredAt->day;
