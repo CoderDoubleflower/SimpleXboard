@@ -1,0 +1,35 @@
+{
+  "head": "008147179a61907f67b5f16214141406d6a486fa",
+  "run_id": 42291285755,
+  "scope": "GitHub Actions Linux amd64; no publication or deployment",
+  "jobs": {
+    "verify": {
+      "job_id": 128145059944,
+      "status": "success",
+      "php": "8.2.35",
+      "phpunit_tests": 67,
+      "phpunit_assertions": 713,
+      "fresh_install_checks": 6,
+      "node_lifecycle_checks": 17,
+      "browser_checks": 13,
+      "browser_screenshots": 12
+    },
+    "protocols": {
+      "job_id": 128145060006,
+      "status": "success",
+      "protocols": [
+        "VLESS + REALITY",
+        "Hysteria2"
+      ],
+      "backend_and_client": "sing-box 1.14.4"
+    },
+    "image": {
+      "job_id": 128145060328,
+      "status": "success",
+      "platform": "linux/amd64",
+      "digest": "sha256:2c828d4c09be3ae3cc130d1e9907a9ec7039f4eb6bf54cdb14acbb74fc660bcd",
+      "cli_output": "Laravel Framework 12.54.1",
+      "pushed": false
+    }
+  }
+}

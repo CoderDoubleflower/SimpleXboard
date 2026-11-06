@@ -65,19 +65,19 @@ git diff --check
 
 ## 验证状态
 
-以下记录实际执行结果；GitHub CI 的最终状态在合并前核对。
+以下记录实际执行结果。[CI run 42291285755](https://github.com/CoderDoubleflower/SimpleXboard/actions/runs/42291285755) 的 verify、protocols、image 三个 job 均通过；对应 head 为 `008147179a61907f67b5f16214141406d6a486fa`。合并前仍检查最终 head 的 CI。
 
 | 项目 | 当前证据 |
 | --- | --- |
-| 后端全量 | 全量 67 tests / 713 assertions 通过；221 个 PHP 文件语法检查无错误 |
+| 后端全量 | PHP 8.4.24 本地与 PHP 8.2.35 CI 均为 67 tests / 713 assertions 通过；221 个 PHP 文件语法检查无错误 |
 | 管理认证与备份 | 12 tests / 62 assertions 通过；包括真实 SQLite 快照、完整性、离线恢复、文件权限、空格密码与异常配置输入 |
 | 真实全新安装 | `xboard:install` 临时完整副本 + TCP Redis + HTTP，6/6 场景通过；包含输出密码登录、首个无密码成员、重跑安装不覆写现有记录。见 `docs/verification/round-2-install.json` |
 | 核心成员与迁移 | 26 tests / 326 assertions 通过；全新迁移、第一轮升级、可选清理后的升级、身份保持、权限差异、零/不限/正数额度、回退与文件副本验证 |
 | 真实节点同步 | 17/17 场景通过；HTTP + Redis + Horizon + Workerman，非消息 mock。报告见 `docs/verification/round-2-node-lifecycle.json` |
 | 前端模块与构建 | 15/15 模块测试通过，两次构建 manifest 一致；最终产物版本 `0e935d971535a48d` |
 | 浏览器桌面/移动端 | 真实 Chrome Headless Shell：13/13 操作场景通过，12 张截图；1440px 桌面、390px 手机五页及手机操作实际点击通过，无 JavaScript 异常、缺失资源或意外 HTTP 错误。见 `docs/verification/round-2-panel.json` |
-| 实际协议连接 | 已固定官方 sing-box 1.14.4 并完成脚本；本地被 netlink 权限阻塞，正在 GitHub CI 的独立 job 执行实际回环连接。见 [协议验证](round-2-protocol-verification.md) |
-| 完整镜像构建 | Buildah 已实际拉取基础镜像，但外层仅单 UID/GID 映射，无法解包 `/etc/shadow` 的 group 42。尚未构建成功；见 [构建记录](round-2-build-verification.md) |
+| 实际协议连接 | CI 使用官方 sing-box 1.14.4，两协议真实 HTTP 代理均通过；原样执行面板订阅、开启 TLS 校验、停止对应服务器后的负面对照通过。见 [协议验证](round-2-protocol-verification.md) |
+| 完整镜像构建 | GitHub CI Linux amd64 全量构建通过，容器内 Laravel CLI 启动通过，未发布；先前本地 Buildah 的 UID/GID 限制与 CI 摘要见 [构建记录](round-2-build-verification.md) |
 
 真实节点测试覆盖创建、更新、轮换、停用、重连、恢复、直接授权改变、共享权限恢复、硬上限、流量上报耗尽、手动清零、不限额、节点启停、订阅隐藏、删除和节点服务令牌轮换。该次普通增量约 0.1–3.1 秒，额度撤销约 3 秒；这些是本地单次观测，**不是生产 SLA**。队列积压、调度周期与节点实现会影响实际生效时间。
 
@@ -85,7 +85,7 @@ git diff --check
 
 即使本地集成测试通过，以下事项仍需要实际部署环境：
 
-1. 正常 Docker/BuildKit 主机完整构建并运行镜像，核验容器内 PHP、Octane、Caddy、Horizon、调度器和 WebSocket。
+1. 在目标主机核验实际挂载目录、资源配置、入口代理和进程管理。CI 已覆盖 amd64 镜像构建；ARM64 构建与该主机环境尚未实跑。
 2. 使用生产同类型数据库的隔离副本复做备份、迁移和回退。当前真实数据库演练为 SQLite；MySQL/PostgreSQL 尚无运行实例，不能宣称跨数据库验证通过。
 3. 使用实际 VPS 节点后端和客户端分别导入 VLESS + REALITY、Hysteria2，验证新连接、已有连接、节点/面板重启、停用/删除/轮换后的撤权行为。控制面消息成功不能代替代理进程的既有连接验证。
 4. 核验实际 Cloudflare 订阅域名、TLS/源站保护和反向代理路径。没有该环境时不更改其配置。

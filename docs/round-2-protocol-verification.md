@@ -1,5 +1,14 @@
 # 第二轮真实协议连接验证
 
+**GitHub CI 已实际通过 VLESS + REALITY 与 Hysteria2 的本机连接验证。** 2026-11-06 的 [run 42291285755 / protocols job 128145060006](https://github.com/CoderDoubleflower/SimpleXboard/actions/runs/42291285755/job/128145060006) 对应分支提交 `008147179a61907f67b5f16214141406d6a486fa`，该 job 的安装、连接测试与证据上传步骤均为 `success`。
+
+| 协议 | HTTP 响应字节数 | 单次请求耗时 | 原样运行订阅 JSON | TLS 校验 | 停止服务端后的请求 |
+| --- | ---: | ---: | --- | --- | --- |
+| VLESS + REALITY | 67 | 11.3 ms | 通过 | 保持开启 | 按预期失败 |
+| Hysteria2 | 67 | 18.0 ms | 通过 | 保持开启 | 按预期失败 |
+
+上述耗时是同一 CI runner 上的单次本机请求记录，用于证明测试实际执行，不作为网络性能指标。机器可读的脱敏结果保存于 [verification/round-2-protocols.json](verification/round-2-protocols.json)，原始日志随该 run 的 `protocol-evidence` artifact 上传。
+
 ## 验证方式
 
 `tests/Integration/protocol_connections.py` 通过 `tests/Support/run-stack.py` 启动的临时面板执行以下检查：
@@ -47,7 +56,7 @@ python3 tests/Support/run-stack.py \
 
 依赖的安装和下载须在执行测试前成功完成。CI 应保留上述 artifacts 目录，尤其是 `protocol-connections-results.json` 和各协议的 `*-check.log`、`*-server.log`、`*-client.log`。
 
-## 当前已观察结果
+## 本地受限环境记录
 
 本地受限运行环境已完成官方压缩包 SHA256 校验，二进制报告 `sing-box version 1.14.4`。临时面板、Redis、Horizon 与 WebSocket 栈已启动；管理员登录、节点与成员创建、节点配置/用户下发、VLESS + REALITY 服务端 `sing-box check` 已执行通过。
 
@@ -57,4 +66,4 @@ python3 tests/Support/run-stack.py \
 start service: initialize network: create netlink socket: operation not permitted
 ```
 
-因此本地结果为 **运行环境阻塞，尚未通过真实协议连接验证**。没有修改内核、权限或二进制来绕过限制。需要在具备普通 Linux 网络能力的 CI runner 上执行同一脚本，只有两种协议的完整 HTTP 请求与停止服务端后的失败检查均通过，才可更新为连接验证通过。
+因此本地结果为 **运行环境阻塞**。没有修改内核、权限或二进制来绕过限制。随后在 GitHub Ubuntu runner 上运行同一脚本，两种协议的完整 HTTP 请求与停止服务端后的失败检查均通过，结果见本文开头。该 CI 结果补足真实协议连接验证，本地环境限制仍如实保留。

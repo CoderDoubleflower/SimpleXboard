@@ -88,6 +88,17 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Check image bootstraps without a database
         run: docker run --rm --entrypoint php simplexboard:ci artisan --version
+      - name: Exercise default container services and restart persistence
+        timeout-minutes: 5
+        run: python3 tests/Integration/container.py --image simplexboard:ci --artifacts storage/framework/testing/container-e2e
+      - name: Save container evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-evidence
+          path: storage/framework/testing/container-e2e/
+          if-no-files-found: ignore
+          retention-days: 7
 
   protocols:
     runs-on: ubuntu-latest

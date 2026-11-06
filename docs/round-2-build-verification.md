@@ -2,11 +2,12 @@
 
 ## 当前结论
 
-2026-11-06 已尝试用真实 Dockerfile 构建运行时阶段。镜像构建被测试环境的用户命名空间映射限制阻塞，**没有构建出可用镜像，也没有发布镜像或部署服务器**。尚不能把后端测试、前端构建或工作流配置检查等同于完整镜像构建通过。
+2026-11-06，GitHub CI 已从提交 `008147179a61907f67b5f16214141406d6a486fa` 的实际检出源码完成 Linux amd64 全量镜像构建，加载到 runner 的 Docker daemon，随后容器内 `php artisan --version` 成功返回 `Laravel Framework 12.54.1`。没有发布镜像或部署服务器。
 
+证据：[run 42291285755 / image job 128145060328](https://github.com/CoderDoubleflower/SimpleXboard/actions/runs/42291285755/job/128145060328)。构建日志中的镜像摘要为 `sha256:2c828d4c09be3ae3cc130d1e9907a9ec7039f4eb6bf54cdb14acbb74fc660bcd`，本地标签为 `simplexboard:ci`，`push: false`。Dockerfile 的 PHP 最低版本与扩展检查、Composer 锁文件安装、前端构建、应用阶段及镜像 CLI 启动均已执行成功。
 当前 Dockerfile 从本地上下文复制 SimpleXboard 后端；Node 阶段使用 `panel/package-lock.json` 构建前端，再将产物复制到应用阶段；Composer 使用仓库中的锁文件安装。Push/PR 工作流只验证，镜像发布只允许显式 `workflow_dispatch` 并指定标签。
 
-## 实际环境与命令
+## 先前本地构建尝试与环境限制
 
 - Linux amd64；无 Docker daemon。
 - Buildah `1.39.3`，image-spec `1.1.0`，runtime-spec `1.2.0`。
@@ -34,7 +35,7 @@ lchown /etc/shadow: invalid argument
 
 失败发生在 Dockerfile 的 `RUN` 步骤之前，因此容器内 PHP 版本检查、依赖安装、应用阶段及镜像启动均未在这次尝试中完成。没有使用忽略所有权错误的选项，也没有改写系统映射。
 
-## 待补验证
+## 复现构建
 
 在支持正常用户/组映射的 Docker/BuildKit 环境中运行完整构建，例如：
 
@@ -44,4 +45,4 @@ docker run --rm --entrypoint php \
   ghcr.io/coderdoubleflower/simplexboard:local artisan --version
 ```
 
-仓库的 Push/PR CI 已配置完整本地上下文构建及上述应用启动检查，`push: false`。须取得该构建的实际成功结果后，才能更新“完整镜像构建”验收状态；长驻服务与实际节点连接仍需各自验证。
+仓库 CI 已实际通过完整本地上下文构建及上述 CLI 启动检查，`push: false`。真实协议连接由独立 job 验证；容器默认长驻服务及重启保持性正在独立启动测试中核验，不能用 CLI 版本输出替代。
