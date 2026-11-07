@@ -7,9 +7,12 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ServerSave;
 use App\Models\Server;
 use App\Services\ServerService;
+use App\Utils\Helper;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use ParagonIE_Sodium_Compat;
 
 class ManageController extends Controller
 {
@@ -280,6 +283,29 @@ class ManageController extends Controller
         $copiedServer->save();
 
         return $this->success(true);
+    }
+
+    public function generateRealityKeyPair(): JsonResponse
+    {
+        $privateKey = random_bytes(32);
+        // Export the canonical X25519 scalar (RFC 7748, section 5), not its
+        // equivalent unclamped representation. Sodium also clamps on use.
+        $privateKey[0] = chr(ord($privateKey[0]) & 248);
+        $privateKey[31] = chr((ord($privateKey[31]) & 127) | 64);
+        $publicKey = ParagonIE_Sodium_Compat::crypto_scalarmult_base($privateKey);
+
+        return $this->success([
+            'public_key' => Helper::base64EncodeUrlSafe($publicKey),
+            'private_key' => Helper::base64EncodeUrlSafe($privateKey),
+            'short_id' => bin2hex(random_bytes(8)),
+        ])->header('Cache-Control', 'no-store');
+    }
+
+    public function generateShortId(): JsonResponse
+    {
+        return $this->success([
+            'short_id' => bin2hex(random_bytes(8)),
+        ])->header('Cache-Control', 'no-store');
     }
 
     /**

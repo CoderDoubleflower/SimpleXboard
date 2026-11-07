@@ -8,10 +8,12 @@ Requires sing-box with QUIC/uTLS support, curl and OpenSSL. Both protocol server
 the TLS handshake target and the HTTP origin listen only on loopback. This tests
 VLESS + REALITY and Hysteria2 data traffic, not deployment to a VPS or a production
 node agent. Subscription responses are executed without modifying their JSON.
+REALITY keys and Short IDs come from the authenticated panel generator APIs.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -45,7 +47,7 @@ class API:
         self.admin_path = "/api/v2/" + admin_path.strip("/") + "/"
         self.authorization = ""
 
-    def raw(self, method, path, data=None, query=None, authenticated=True, user_agent=None):
+    def raw(self, method, path, data=None, query=None, authenticated=True, user_agent=None, require_no_store=False):
         url = self.base + path + ("?" + urlencode(query) if query else "")
         headers = {"Accept": "application/json"}
         if authenticated and self.authorization:
@@ -58,6 +60,9 @@ class API:
         try:
             with urlopen(request, timeout=15) as response:
                 require(response.status == 200, "Panel operation returned a non-200 status")
+                if require_no_store:
+                    directives = {value.strip().lower() for value in response.headers.get("Cache-Control", "").split(",")}
+                    require("no-store" in directives, "Credential generation response omitted Cache-Control: no-store")
                 return response.read()
         except HTTPError as error:
             # Bodies and URLs can contain credentials; never include them in logs.
@@ -71,8 +76,25 @@ class API:
         except json.JSONDecodeError:
             raise CheckFailed("Panel returned an invalid JSON response") from None
 
-    def admin(self, path, data=None, method="POST"):
-        return self.request(method, self.admin_path + path, data=data)["data"]
+    def admin(self, path, data=None, method="POST", require_no_store=False):
+        return self.request(method, self.admin_path + path, data=data, require_no_store=require_no_store)["data"]
+
+
+def validate_short_id(value):
+    require(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{16}", value) is not None,
+            "REALITY generator returned an invalid 8-byte Short ID")
+
+
+def validate_reality_pair(pair):
+    require(isinstance(pair, dict), "REALITY generator returned an invalid key pair response")
+    for field in ("private_key", "public_key"):
+        value = pair.get(field)
+        require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{43}", value) is not None,
+                "REALITY generator returned an invalid " + field + " encoding")
+        decoded = base64.urlsafe_b64decode(value + "=")
+        require(len(decoded) == 32 and base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") == value,
+                "REALITY generator returned a noncanonical 32-byte " + field)
+    validate_short_id(pair.get("short_id"))
 
 
 def free_port(kind=socket.SOCK_STREAM):
@@ -161,16 +183,20 @@ def main():
                     "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost",
                     "-keyout", str(key), "-out", str(cert)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     key.chmod(0o600)
-    pair = dict(line.split(": ", 1) for line in subprocess.check_output([binary, "generate", "reality-keypair"], text=True).splitlines() if ": " in line)
+    pair = api.admin("server/manage/generateRealityKeyPair", require_no_store=True)
+    validate_reality_pair(pair)
+    standalone_short_id = api.admin("server/manage/generateShortId", require_no_store=True)
+    require(isinstance(standalone_short_id, dict), "Short ID generator returned an invalid response")
+    validate_short_id(standalone_short_id.get("short_id"))
     decoy_port, vless_port, hy2_port = free_port(), free_port(), free_port(socket.SOCK_DGRAM)
-    short_id = secrets.token_hex(8)
+    short_id = pair["short_id"]
     hy2_password = secrets.token_urlsafe(24)
     nodes = [
         {"type": "vless", "name": "Loopback REALITY", "host": "127.0.0.1", "port": str(vless_port), "server_port": vless_port,
          "show": True, "enabled": True, "protocol_settings": {
              "tls": 2, "network": "tcp", "flow": "xtls-rprx-vision", "utls": {"enabled": True, "fingerprint": "chrome"},
              "reality_settings": {"server_name": "localhost", "server_port": decoy_port, "allow_insecure": False,
-                                  "private_key": pair["PrivateKey"], "public_key": pair["PublicKey"], "short_id": short_id}}},
+                                  "private_key": pair["private_key"], "public_key": pair["public_key"], "short_id": short_id}}},
         {"type": "hysteria", "name": "Loopback Hysteria2", "host": "127.0.0.1", "port": str(hy2_port), "server_port": hy2_port,
          "show": True, "enabled": True, "protocol_settings": {"version": 2,
              "tls": {"server_name": "localhost", "allow_insecure": False}, "bandwidth": {"up": 100, "down": 100},
@@ -250,10 +276,10 @@ def main():
             require(subscription["route"]["final"] == node["name"], "Subscription changed the selected route")
             require(outbound["tls"]["insecure"] is False, label + " subscription disabled certificate verification")
             require(outbound["tls"]["server_name"] == "localhost", label + " subscription changed the TLS name")
-            require(pair["PrivateKey"].encode() not in raw, "Subscription exposed the REALITY private key")
+            require(pair["private_key"].encode() not in raw, "Subscription exposed the REALITY private key")
             require(outbound.get("uuid", outbound.get("password")) == backend_user["uuid"], "Subscription credentials differ from node API")
             if label == "vless-reality":
-                require(outbound["flow"] == "xtls-rprx-vision" and outbound["tls"]["reality"]["public_key"] == pair["PublicKey"]
+                require(outbound["flow"] == "xtls-rprx-vision" and outbound["tls"]["reality"]["public_key"] == pair["public_key"]
                         and outbound["tls"]["reality"]["short_id"] == short_id, "Subscription changed REALITY settings")
             else:
                 require(outbound["type"] == "hysteria2" and outbound["obfs"] == {"type": "salamander", "password": hy2_password},
@@ -281,6 +307,9 @@ def main():
             processes.stop(client)
             outcome = {"protocol": label, "status": "passed", "http_response_bytes": len(expected_body), "elapsed_ms": elapsed,
                        "subscription_executed_unchanged": True, "tls_verification_enabled": True, "stopped_server_request_failed": True}
+            if label == "vless-reality":
+                outcome.update({"reality_keypair_source": "admin-api", "generated_keys_format_valid": True,
+                                "standalone_short_id_format_valid": True, "generation_response_no_store": True})
             result["protocols"].append(outcome)
             print(json.dumps(outcome), flush=True)
         result["status"] = "passed"
