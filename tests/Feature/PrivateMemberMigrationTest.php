@@ -36,7 +36,8 @@ class PrivateMemberMigrationTest extends TestCase
         $migrator->getRepository()->createRepository();
         $files = $migrator->getMigrationFiles([database_path('migrations')]);
         $this->migrationPath = $files['2026_11_06_000002_remove_member_plan_dependencies'];
-        unset($files['2026_11_06_000002_remove_member_plan_dependencies']);
+        // Rehearse this historical boundary independently of later migrations.
+        $files = array_filter($files, fn ($name) => $name < '2026_11_06_000002_remove_member_plan_dependencies', ARRAY_FILTER_USE_KEY);
         $migrator->run(array_values($files), ['step' => true]);
     }
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { memberPayload, nodePayload, quotaBytes, gibValue, jsonObject, PATH_PATTERN } from '../src/domain.js';
+import { memberPayload, nodePayload, quotaBytes, gibValue, jsonObject, trafficRate, PATH_PATTERN } from '../src/domain.js';
 import { bytes, memberStatus, protocolName, subscriptionUrl } from '../src/format.js';
 
 test('path patterns work with the HTML pattern Unicode sets flag', () => {
@@ -39,8 +39,10 @@ test('restricted access serializes direct server ids and preserves member id', (
   assert.throws(() => memberPayload({ name: 'Guest', expired_at: 'invalid' }), /到期时间/);
 });
 
-test('quota status includes legacy counters while display helpers do not invent traffic', () => {
+test('quota status uses charged usage independently of actual and legacy traffic', () => {
   assert.equal(memberStatus({ transfer_enable: 100, u: 40, d: 60, actual_u: 0, actual_d: 0 }).label, '额度用尽');
+  assert.equal(memberStatus({ transfer_enable: 100, u: 40, d: 60, actual_u: 20, actual_d: 30 }).label, '额度用尽');
+  assert.equal(memberStatus({ transfer_enable: 100, u: 20, d: 30, actual_u: 40, actual_d: 60 }).label, '已启用');
   assert.equal(memberStatus({ transfer_enable: null, u: 1e12, d: 1e12 }).label, '已启用');
   assert.equal(memberStatus({ transfer_enable: 0, u: 0, d: 0 }).label, '额度用尽');
   assert.equal(memberStatus({ banned: true, transfer_enable: null }).label, '已停用');
@@ -51,6 +53,29 @@ test('quota status includes legacy counters while display helpers do not invent 
 });
 
 const commonNode = { name: ' Tokyo ', host: 'node.example.test', port: '443', server_port: '8443', enabled: true, show: false, machine_id: '5', tags: ' jp, private ', quota: '', advanced_json: '{}' };
+
+test('node rates default to one and keep an existing fractional or zero rate', () => {
+  const values = { ...commonNode, type: 'tuic', protocol_json: '{}' };
+  assert.equal(nodePayload(values).rate, 1);
+  assert.equal(nodePayload(values, { id: 6, rate: '0.50' }).rate, 0.5);
+  assert.equal(nodePayload(values, { id: 6, rate: 0 }).rate, 0);
+  assert.equal(nodePayload({ ...values, rate: '2' }, { id: 6, rate: 0 }).rate, 2);
+});
+
+test('fixed multipliers preserve fractional precision and do not scale node limits', () => {
+  for (const [value, expected] of [['.5', 0.5], ['0.50', 0.5], ['2', 2], ['0', 0], [0, 0], ['1.25', 1.25], ['0.07', 0.07], ['100.00', 100]]) {
+    assert.equal(trafficRate(value), expected);
+    const payload = nodePayload({ ...commonNode, type: 'tuic', protocol_json: '{}', quota: '1', rate: value });
+    assert.equal(payload.rate, expected);
+    assert.equal(payload.transfer_enable, 1073741824);
+  }
+});
+
+test('invalid rates are rejected instead of clamped or rounded', () => {
+  for (const value of ['', ' ', '-0.01', '100.01', '0.001', '1.000', '2.345', 'NaN', 'Infinity', '1e2', null, true, [], {}, NaN, Infinity]) {
+    assert.throws(() => nodePayload({ ...commonNode, type: 'tuic', protocol_json: '{}', rate: value }), /流量倍率须为 0–100，最多保留 2 位小数/);
+  }
+});
 
 test('VLESS REALITY editor preserves extension settings and separates enable/show', () => {
   const current = { id: 6, type: 'vless', route_ids: [2], group_ids: [8], rate: 3 };
@@ -72,7 +97,7 @@ test('VLESS REALITY editor preserves extension settings and separates enable/sho
   assert.equal(payload.protocol_settings.reality_settings.private_key, 'private');
   assert.equal(payload.protocol_settings.mux.enabled, true);
   assert.equal(Object.hasOwn(payload, 'group_ids'), false);
-  assert.equal(Object.hasOwn(payload, 'rate'), false);
+  assert.equal(payload.rate, 3);
   assert.equal(protocolName(payload), 'VLESS · REALITY');
 });
 

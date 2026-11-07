@@ -149,7 +149,10 @@ class PrivateMembersTest extends TestCase
 
     public function test_manual_reset_recovers_a_hard_limit_without_reclassifying_legacy_bytes(): void
     {
-        $member = $this->member(['transfer_enable' => 100, 'u' => 80, 'd' => 20, 'legacy_u' => 50, 'legacy_d' => 20]);
+        $member = $this->member([
+            'transfer_enable' => 100, 'u' => 80, 'd' => 20, 'legacy_u' => 50, 'legacy_d' => 20,
+            'actual_u' => 30, 'actual_d' => 0,
+        ]);
         $this->assertFalse($member->isAvailable());
         $this->assertSame(30, $member->getActualUpload());
         $this->assertSame(0, $member->getActualDownload());

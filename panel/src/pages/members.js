@@ -67,7 +67,9 @@ function trafficCell(member) {
   const quotaUsed = Number(member.u ?? 0) + Number(member.d ?? 0);
   const unlimited = member.transfer_enable === null || member.transfer_enable === undefined;
   const ratio = unlimited ? 0 : Math.min(100, member.transfer_enable > 0 ? quotaUsed / member.transfer_enable * 100 : 100);
-  const cell = h('div', { class: 'traffic-cell' }, h('strong', {}, bytes(actual)), h('small', { class: 'muted' }, unlimited ? '不限额度' : `额度已用 ${bytes(quotaUsed)} / ${bytes(member.transfer_enable)}`));
+  const cell = h('div', { class: 'traffic-cell' },
+    h('strong', {}, `实际 ${bytes(actual)}`),
+    h('small', { class: 'muted' }, `额度已用 ${bytes(quotaUsed)}${unlimited ? ' · 不限额度' : ` / ${bytes(member.transfer_enable)}`}`));
   if (!unlimited) {
     const meter = h('span', { class: `meter-fill ${ratio >= 90 ? 'meter-warning' : ''}` });
     meter.style.width = `${ratio}%`;
@@ -91,7 +93,7 @@ function memberEditor(member, nodes, context, reload) {
     field('成员名称', input('name', member?.name ?? '', { maxlength: 255, placeholder: '例如：小林' })),
     field('邮箱（可选）', input('email', member?.email ?? '', { type: 'email', maxlength: 64, placeholder: '用于标识，不创建登录账户' })),
     scope,
-    field('流量硬上限（GiB）', input('quota', gibValue(member?.transfer_enable), { type: 'number', min: '0', step: 'any', placeholder: '留空表示不限' }), { hint: '0 表示没有可用额度；额度累计包含迁移前的折算量。' }),
+    field('流量硬上限（GiB）', input('quota', gibValue(member?.transfer_enable), { type: 'number', min: '0', step: 'any', placeholder: '留空表示不限' }), { hint: '额度按节点倍率累计，实际流量单独统计。0 表示没有可用额度；留空表示不限。' }),
     field('有效期', input('expired_at', dateInput(member?.expired_at), { type: 'datetime-local' }), { hint: '留空表示永久有效，时间使用当前设备时区。' }),
     field('速度限制（Mbps）', input('speed_limit', member?.speed_limit ?? '', { type: 'number', min: 0, step: 1, placeholder: '不限' })),
     field('设备限制', input('device_limit', member?.device_limit ?? '', { type: 'number', min: 0, step: 1, placeholder: '不限' })),

@@ -400,6 +400,28 @@ def main():
             connection, full = node_socket(base_url, node, fixture["server_token"])
             require(contains_member(full, member), "Enabled member is missing from WebSocket full sync")
         passed("Caddy forwards real WebSocket Upgrade and authenticated node full sync")
+
+        rated_id = fixture["nodes"][0]["id"]
+
+        def rated_node():
+            return next(node for node in api.admin("server/manage/getNodes", method="GET")["data"] if node["id"] == rated_id)
+
+        def usage_matches(upload, download, actual_upload, actual_download):
+            current = api.admin("user/getUserInfoById", query={"id": member["id"]}, method="GET")["data"]
+            node = rated_node()
+            return (current["u"], current["d"], current["actual_u"], current["actual_d"]) == (
+                upload, download, actual_upload, actual_download) and (int(node["u"]), int(node["d"])) == (actual_upload, actual_download)
+
+        node = rated_node()
+        require(float(node["rate"]) == 1, "Container migration did not default node rates to 1x")
+        payload = {field: node[field] for field in ["id", "type", "name", "host", "port", "server_port", "protocol_settings"]}
+        api.admin("server/manage/save", {**payload, "rate": 0.5})
+        api.json("POST", "/api/v2/server/report", data={
+            "token": fixture["server_token"], "node_id": rated_id, "traffic": {str(member["id"]): [1, 3]},
+        })
+        wait_ready(lambda: usage_matches(0, 1, 1, 3), "Fractional traffic accounting through the container worker")
+        passed("Container worker records actual bytes and charges the configured 0.5x node rate")
+
         api.admin("user/ban", {"id": member["id"], "banned": True})
         for connection in sockets:
             connection.wait("sync.user.delta", lambda message: message.get("data", {}).get("action") == "remove" and contains_member(message, member))
@@ -417,8 +439,10 @@ def main():
         current = api.admin("user/getUserInfoById", query={"id": member["id"]}, method="GET")["data"]
         require(current.get("token") == member["token"] and current.get("uuid") == member["uuid"] and current.get("banned") is True,
                 "Container restart changed member credentials or lost the disabled state")
+        require(usage_matches(0, 1, 1, 3) and float(rated_node()["rate"]) == 0.5,
+                "Container restart changed node rates, quota usage or actual byte counters")
         api.raw("GET", "/s/" + member["token"], expected=403)
-        passed("Container restart preserves administrator login, panel assets, member token/UUID and disabled state")
+        passed("Container restart preserves login, assets, identity, disabled state, node rate and both traffic counters")
 
         for node in fixture["nodes"]:
             full = api.json("GET", "/api/v2/server/user", query={"token": fixture["server_token"], "node_id": node["id"]})
@@ -432,6 +456,11 @@ def main():
             connection.wait("sync.user.delta", lambda message: message.get("data", {}).get("action") == "add" and contains_member(message, member))
         check_subscription(api, member)
         passed("Member restoration after restart reaches both nodes and restores the same subscription")
+        api.json("POST", "/api/v2/server/report", data={
+            "token": fixture["server_token"], "node_id": rated_id, "traffic": {str(member["id"]): [1, 1]},
+        })
+        wait_ready(lambda: usage_matches(1, 2, 2, 4), "Fractional byte carry after a complete container restart")
+        passed("Fractional byte remainders survive a complete container restart and charge the next report correctly")
         check_backup(api)
         passed("HTTP SQLite backup remains writable and downloadable after container restart")
         report["status"] = "passed"
