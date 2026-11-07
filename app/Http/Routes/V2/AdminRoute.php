@@ -34,6 +34,8 @@ class AdminRoute
             $router->post('server/route/drop', [RouteController::class, 'drop']);
             $router->get('server/manage/getNodes', [ManageController::class, 'getNodes']);
             $router->get('server/manage/generateEchKey', [ManageController::class, 'generateEchKey']);
+            $router->post('server/manage/generateRealityKeyPair', [ManageController::class, 'generateRealityKeyPair']);
+            $router->post('server/manage/generateShortId', [ManageController::class, 'generateShortId']);
             $router->post('server/manage/update', [ManageController::class, 'update']);
             $router->post('server/manage/save', [ManageController::class, 'save']);
             $router->post('server/manage/drop', [ManageController::class, 'drop']);

@@ -170,9 +170,13 @@ def main():
                 expect(form.locator('[name="rate"]')).to_have_value('1')
                 if protocol == 'vless':
                     form.locator('[name="reality_server_name"]').fill('www.example.com')
-                    form.get_by_role('button', name='生成新密钥对', exact=True).click()
+                    generated = action('server/manage/generateRealityKeyPair', lambda: form.get_by_role('button', name='一键生成密钥和 Short ID', exact=True).click())
                     expect(form.locator('[name="reality_public_key"]')).to_have_value(re.compile(r'^[A-Za-z0-9_-]{43}$'))
                     assert len(form.locator('[name="reality_private_key"]').input_value()) == 43
+                    expect(form.locator('[name="reality_short_id"]')).to_have_value(re.compile(r'^[0-9a-f]{16}$'))
+                    assert form.locator('[name="reality_public_key"]').input_value() == generated['public_key']
+                    assert form.locator('[name="reality_private_key"]').input_value() == generated['private_key']
+                    assert form.locator('[name="reality_short_id"]').input_value() == generated['short_id']
                 else:
                     form.locator('[name="rate"]').fill('2')
                     form.locator('[name="tls_server_name"]').fill('hy.example.test')
@@ -196,6 +200,8 @@ def main():
             assert float(reality['rate']) == 1
             assert float(hy2['rate']) == 2
             assert reality['protocol_settings']['tls'] == 2
+            for key in ['public_key', 'private_key', 'short_id']:
+                assert reality['protocol_settings']['reality_settings'][key] == generated[key], 'Generated REALITY credentials did not persist'
             assert hy2['protocol_settings']['version'] == 2
             assert hy2['protocol_settings']['obfs']['open'] is True
             expect(table_row(node_names[0])).to_contain_text('额度倍率 1×')

@@ -59,6 +59,9 @@ jobs:
       - name: Exercise desktop and mobile management flows
         timeout-minutes: 10
         run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/panel-e2e -- python panel/tests/e2e.py
+      - name: Exercise REALITY generation without browser WebCrypto
+        timeout-minutes: 5
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/reality-e2e -- python panel/tests/reality_generation.py
       - name: Save integration evidence
         if: always()
         uses: actions/upload-artifact@v4

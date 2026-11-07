@@ -1,6 +1,7 @@
 import { h, icon, button, iconButton, badge, input, select, field, textarea, checkbox, secretInput, formValues, pageHeader, panel, loading, emptyState, errorState, notice, table, toast, copyText, runAction, openDialog, confirmAction, toggleSwitch, tabs } from '../ui.js';
-import { data, bytes, datetime, relativeTime, nodeStatus, protocolName } from '../format.js';
+import { data, bytes, datetime, relativeTime, nodeStatus, protocolName, errorMessage } from '../format.js';
 import { nodePayload, gibValue } from '../domain.js';
+import { createRealityGenerator } from '../reality.js';
 
 export async function nodesPage(host, context) {
   const { api, signal, navigate } = context;
@@ -125,6 +126,10 @@ function defaultProtocol(type) {
 }
 
 function nodeEditor(node, machines, context, reload) {
+  let editor;
+  let generation = null;
+  let saving = false;
+  let syncGenerationControls = () => {};
   const types = [{ value: 'vless', label: 'VLESS + REALITY / TLS' }, { value: 'hysteria', label: 'Hysteria2' }];
   if (node && !types.some(type => type.value === node.type)) types.push({ value: node.type, label: protocolName(node) });
   const type = select('type', types, node?.type ?? 'vless', { disabled: Boolean(node) });
@@ -152,6 +157,9 @@ function nodeEditor(node, machines, context, reload) {
         field('节点高级配置 JSON', advancedJson, { hint: '可维护 cert_config、custom_routes、custom_outbounds、route_ids 等现有节点参数。' }))));
 
   function renderProtocol() {
+    generation?.cancel();
+    generation = null;
+    syncGenerationControls = () => {};
     const settings = type.value === node?.type ? (node.protocol_settings ?? {}) : defaultProtocol(type.value);
     protocolJson.value = JSON.stringify(settings, null, 2);
     protocolBody.replaceChildren();
@@ -159,31 +167,60 @@ function nodeEditor(node, machines, context, reload) {
       const tls = select('vless_tls', [{ value: '2', label: 'REALITY' }, { value: '1', label: 'TLS' }, { value: '0', label: '不启用 TLS' }], String(settings.tls ?? 2));
       const publicKey = input('reality_public_key', settings.reality_settings?.public_key ?? '', { required: true, class: 'input mono', spellcheck: false });
       const privateKey = secretInput('reality_private_key', settings.reality_settings?.private_key ?? '', { required: true });
+      const privateInput = privateKey.querySelector('input');
       const shortId = input('reality_short_id', settings.reality_settings?.short_id ?? '', { class: 'input mono', maxlength: 16, pattern: '[0-9a-fA-F]{0,16}', placeholder: '十六进制，例如 a1b2c3d4' });
+      const generatePair = button('一键生成密钥和 Short ID', { icon: 'key', onClick: () => generator.generateKeyPair() });
+      const generateShort = button('生成 Short ID', { onClick: () => generator.generateShortId() });
+      const generationStatus = h('div', { class: 'generation-status field-wide' });
+      let progress = null;
       const reality = h('div', { class: 'form-grid field-wide' },
         field('REALITY 目标域名 / SNI', input('reality_server_name', settings.reality_settings?.server_name ?? '', { required: true, placeholder: 'www.example.com' }), { required: true }),
         field('REALITY 目标端口', input('reality_server_port', settings.reality_settings?.server_port ?? 443, { required: true, type: 'number', min: 1, max: 65535 })),
+        h('div', { class: 'field-wide inline-actions' }, generatePair, h('span', { class: 'field-hint' }, '仅填入当前表单，保存节点后生效。')),
+        generationStatus,
         field('公钥', publicKey, { wide: true, required: true }),
         field('私钥', privateKey, { wide: true, required: true }),
-        field('Short ID', shortId),
-        field('客户端指纹', input('utls_fingerprint', settings.utls?.fingerprint ?? 'chrome')),
-        h('div', { class: 'field-wide inline-actions' }, button('生成新密钥对', { icon: 'key', onClick: event => runAction(event.currentTarget, async () => {
-          if (!crypto.subtle) throw new Error('当前浏览器环境无法生成密钥，请使用 HTTPS 或从节点工具导入密钥。');
-          const pair = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
-          const [pub, priv] = await Promise.all([crypto.subtle.exportKey('jwk', pair.publicKey), crypto.subtle.exportKey('jwk', pair.privateKey)]);
-          publicKey.value = pub.x;
-          privateKey.querySelector('input').value = priv.d;
-          shortId.value = [...crypto.getRandomValues(new Uint8Array(4))].map(byte => byte.toString(16).padStart(2, '0')).join('');
-          toast('密钥已生成，保存节点后生效');
-        }) }), h('span', { class: 'field-hint' }, '密钥仅在当前浏览器生成。')));
+        field('Short ID', h('div', { class: 'input-action' }, shortId, generateShort)),
+        field('客户端指纹', input('utls_fingerprint', settings.utls?.fingerprint ?? 'chrome')));
+      const generator = createRealityGenerator({
+        api: context.api,
+        isActive: () => Boolean(editor?.dialog.open && reality.isConnected && !context.signal.aborted && !saving && type.value === 'vless' && tls.value === '2'),
+        onBusy: (busy, kind) => {
+          syncGenerationControls();
+          if (busy) {
+            progress = notice(kind === 'pair' ? '正在生成密钥和 Short ID…' : '正在生成 Short ID…');
+            generationStatus.replaceChildren(progress);
+          } else if (generationStatus.firstChild === progress) generationStatus.replaceChildren();
+          for (const control of [generatePair, generateShort]) control.removeAttribute('aria-busy');
+          if (busy) (kind === 'pair' ? generatePair : generateShort).setAttribute('aria-busy', 'true');
+        },
+        onResult: (values, kind) => {
+          if (kind === 'pair') {
+            publicKey.value = values.public_key;
+            privateInput.value = values.private_key;
+          }
+          shortId.value = values.short_id;
+          generationStatus.replaceChildren(notice(kind === 'pair' ? '密钥和 Short ID 已生成，保存节点后生效。' : 'Short ID 已生成，公钥和私钥保持不变；保存节点后生效。', 'success'));
+        },
+        onError: error => generationStatus.replaceChildren(notice(`生成失败：${errorMessage(error)} 原有值已保留，请重试。`, 'error')),
+      });
+      generation = generator;
+      syncGenerationControls = () => {
+        const disabled = tls.value !== '2' || generator.busy || saving;
+        for (const control of [generatePair, generateShort, publicKey, privateInput, shortId]) control.disabled = disabled;
+        const submit = editor?.form.querySelector('button[type="submit"]');
+        if (submit) submit.disabled = generator.busy || saving;
+      };
       const tlsFields = h('div', { class: 'form-grid field-wide' },
         field('TLS 服务器名称 / SNI', input('tls_server_name', settings.tls_settings?.server_name ?? '', { placeholder: 'node.example.com' })),
         checkbox('tls_insecure', '跳过证书校验', Boolean(settings.tls_settings?.allow_insecure), '仅在确实需要时启用。'));
       const showFields = () => {
+        if (tls.value !== '2') generator.cancel();
         for (const [group, active] of [[reality, tls.value === '2'], [tlsFields, tls.value === '1']]) {
           group.hidden = !active;
           for (const control of group.querySelectorAll('input,select,button')) control.disabled = !active;
         }
+        syncGenerationControls();
       };
       tls.addEventListener('change', showFields);
       protocolBody.append(field('安全方式', tls), field('传输方式', input('network', settings.network || 'tcp', { required: true, placeholder: 'tcp / ws / grpc / xhttp' })), field('Flow', input('flow', settings.flow ?? '', { placeholder: 'xtls-rprx-vision' }), { wide: true }), reality, tlsFields);
@@ -206,9 +243,28 @@ function nodeEditor(node, machines, context, reload) {
   }
   type.addEventListener('change', renderProtocol);
   renderProtocol();
-  openDialog({ title: node ? '编辑节点' : '添加节点', description: node ? `节点 #${node.id} · 保存后，节点服务将在下次同步时读取新配置。` : '配置节点的连接入口，然后将订阅分享给成员。', content, large: true,
+  editor = openDialog({ title: node ? '编辑节点' : '添加节点', description: node ? `节点 #${node.id} · 保存后，节点服务将在下次同步时读取新配置。` : '配置节点的连接入口，然后将订阅分享给成员。', content, large: true,
     submitLabel: node ? '保存节点' : '创建节点',
-    onSubmit: form => context.api.post('server/manage/save', nodePayload({ ...formValues(form), type: type.value }, node)),
+    onSubmit: async form => {
+      if (generation?.busy) throw new Error('正在生成，请等待完成后再保存。');
+      const payload = nodePayload({ ...formValues(form), type: type.value }, node);
+      saving = true;
+      syncGenerationControls();
+      try { return await context.api.post('server/manage/save', payload); }
+      finally { saving = false; syncGenerationControls(); }
+    },
     onSuccess: () => { toast(node ? '节点配置已保存' : '节点已创建'); reload(); },
   });
+  // Block Enter/requestSubmit too, without making the dialog impossible to close.
+  editor.form.addEventListener('submit', event => {
+    if (!generation?.busy) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, { capture: true });
+  const leave = () => { generation?.cancel(); editor.close(); };
+  context.signal.addEventListener('abort', leave, { once: true });
+  editor.dialog.addEventListener('close', () => {
+    generation?.cancel();
+    context.signal.removeEventListener('abort', leave);
+  }, { once: true });
 }

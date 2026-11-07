@@ -20,6 +20,8 @@
 
 VLESS + REALITY、Hysteria2、现有其他协议及必要客户端格式保留。Redis、Horizon、Octane、WebSocket、机器与节点鉴权继续使用现有架构。
 
+创建或编辑 VLESS + REALITY 节点时，点击「一键生成密钥和 Short ID」即可填入配对公钥、私钥及 Short ID；也可单独点击「生成 Short ID」，保留现有密钥对。生成由已登录的管理后台完成，不依赖浏览器的 X25519 / WebCrypto 支持。手动导入仍然可用，生成结果在保存节点后才生效。
+
 ## 成员和额度
 
 ```http

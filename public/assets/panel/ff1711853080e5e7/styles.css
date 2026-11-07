@@ -1111,6 +1111,24 @@ select.input {
   top:4px
 }
 
+.input-action {
+  display:flex;
+  align-items:center;
+  gap:8px
+}
+
+.input-action>.input {
+  flex:1
+}
+
+.input-action>.button {
+  flex-shrink:0
+}
+
+.generation-status:empty {
+  display:none
+}
+
 .check-field {
   display:flex;
   align-items:flex-start;
