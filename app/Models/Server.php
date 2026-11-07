@@ -54,6 +54,7 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
  * @property int $transfer_enable 流量上限，0或者null表示不限制
  * @property int $u 当前上传流量
  * @property int $d 当前下载流量
+ * @property string $rate 固定成员额度倍率，最多两位小数；节点流量保持实际字节
  */
 class Server extends Model
 {
@@ -111,7 +112,7 @@ class Server extends Model
     protected $table = 'v2_server';
 
     protected $guarded = ['id'];
-    protected $attributes = ['show' => true, 'enabled' => true];
+    protected $attributes = ['show' => true, 'enabled' => true, 'rate' => '1.00'];
     protected $casts = [
         'route_ids' => 'array',
         'tags' => 'array',
@@ -128,6 +129,7 @@ class Server extends Model
         'transfer_enable' => 'integer',
         'u' => 'integer',
         'd' => 'integer',
+        'rate' => 'decimal:2',
         'machine_id' => 'integer',
     ];
 
@@ -446,6 +448,14 @@ class Server extends Model
     {
         return $this->enabled && ($this->transfer_enable === null || $this->transfer_enable === 0
             || (int) $this->u + (int) $this->d < $this->transfer_enable);
+    }
+
+    public function getRateHundredths(): int
+    {
+        // The decimal cast supplies a canonical two-place string. Never turn
+        // the multiplier into a binary floating-point product with byte counts.
+        [$whole, $fraction] = explode('.', $this->rate);
+        return (int) $whole * 100 + (int) $fraction;
     }
 
     public function routes()

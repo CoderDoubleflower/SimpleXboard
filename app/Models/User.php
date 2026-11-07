@@ -12,7 +12,8 @@ use Laravel\Sanctum\HasApiTokens;
 /**
  * Member identity and hard usage limit. Only administrators have login passwords.
  * transfer_enable: null = unlimited, 0 = unavailable, positive = bytes allowed.
- * u/d retain legacy quota accounting; legacy_u/d identify its pre-upgrade portion.
+ * u/d track quota charges; actual_u/d track reported bytes since the last reset.
+ * legacy_u/d identify the pre-Round-2 portion of quota usage.
  */
 class User extends Authenticatable
 {
@@ -43,11 +44,18 @@ class User extends Authenticatable
         'd' => 'integer',
         'legacy_u' => 'integer',
         'legacy_d' => 'integer',
+        'actual_u' => 'integer',
+        'actual_d' => 'integer',
+        'billing_u_remainder' => 'integer',
+        'billing_d_remainder' => 'integer',
         'speed_limit' => 'integer',
         'device_limit' => 'integer',
         'last_reset_at' => 'timestamp',
     ];
-    protected $hidden = ['password', 'password_algo', 'password_salt'];
+    protected $hidden = [
+        'password', 'password_algo', 'password_salt',
+        'billing_u_remainder', 'billing_d_remainder',
+    ];
 
     protected function email(): Attribute
     {
@@ -149,11 +157,11 @@ class User extends Authenticatable
 
     public function getActualUpload(): int
     {
-        return max(0, (int) $this->u - (int) $this->legacy_u);
+        return (int) ($this->actual_u ?? 0);
     }
 
     public function getActualDownload(): int
     {
-        return max(0, (int) $this->d - (int) $this->legacy_d);
+        return (int) ($this->actual_d ?? 0);
     }
 }

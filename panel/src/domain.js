@@ -18,6 +18,14 @@ export function quotaBytes(value) {
 
 export function gibValue(value) { return value === null || value === undefined ? '' : String(Number(value) / GIB); }
 
+export function trafficRate(value) {
+  const text = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+  if (!/^(?:\d+(?:\.\d{1,2})?|\.\d{1,2})$/.test(text) || Number(text) > 100) {
+    throw new Error('流量倍率须为 0–100，最多保留 2 位小数。');
+  }
+  return Number(text);
+}
+
 export function jsonObject(text, label = 'JSON') {
   let result;
   try { result = JSON.parse(text || '{}'); }
@@ -87,6 +95,8 @@ export function nodePayload(values, current = null) {
     machine_id: optionalNumber(values.machine_id, 'VPS'),
     enabled: Boolean(values.enabled), show: Boolean(values.show),
     tags: String(values.tags ?? '').split(',').map(tag => tag.trim()).filter(Boolean),
-    transfer_enable: quotaBytes(values.quota), protocol_settings: protocol,
+    transfer_enable: quotaBytes(values.quota),
+    rate: trafficRate(values.rate === undefined ? current?.rate ?? 1 : values.rate),
+    protocol_settings: protocol,
   };
 }

@@ -24,8 +24,14 @@ class TrafficResetService
             $oldDownload = (int) $member->d;
             $legacyUpload = (int) $member->legacy_u;
             $legacyDownload = (int) $member->legacy_d;
+            $actualUpload = $member->getActualUpload();
+            $actualDownload = $member->getActualDownload();
+            $uploadRemainder = (int) $member->billing_u_remainder;
+            $downloadRemainder = (int) $member->billing_d_remainder;
             $member->update([
                 'u' => 0, 'd' => 0, 'legacy_u' => 0, 'legacy_d' => 0,
+                'actual_u' => 0, 'actual_d' => 0,
+                'billing_u_remainder' => 0, 'billing_d_remainder' => 0,
                 'last_reset_at' => time(), 'reset_count' => (int) $member->reset_count + 1,
             ]);
             TrafficResetLog::create([
@@ -37,7 +43,12 @@ class TrafficResetService
                 'old_total' => $oldUpload + $oldDownload,
                 'new_upload' => 0, 'new_download' => 0, 'new_total' => 0,
                 'trigger_source' => TrafficResetLog::SOURCE_MANUAL,
-                'metadata' => $metadata + ['legacy_upload' => $legacyUpload, 'legacy_download' => $legacyDownload],
+                'metadata' => array_merge($metadata, [
+                    'legacy_upload' => $legacyUpload, 'legacy_download' => $legacyDownload,
+                    'actual_upload' => $actualUpload, 'actual_download' => $actualDownload,
+                    'billing_u_remainder' => $uploadRemainder,
+                    'billing_d_remainder' => $downloadRemainder,
+                ]),
             ]);
             foreach (["user_traffic_{$member->id}", "user_reset_status_{$member->id}", "user_subscription_{$member->token}"] as $key) {
                 Cache::forget($key);

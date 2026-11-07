@@ -112,7 +112,7 @@ def main():
             assert response.status == expected, f'Subscription expected {expected}, received {response.status}'
             return response.json() if expected == 200 else None
 
-        def member_row(name):
+        def table_row(name):
             return page.locator('tbody tr').filter(has=page.get_by_text(name, exact=True))
 
         try:
@@ -167,12 +167,14 @@ def main():
                 form.locator('[name="port"]').fill('24443' if protocol == 'vless' else '24444')
                 form.locator('[name="server_port"]').fill('24443' if protocol == 'vless' else '24444')
                 form.get_by_label('绑定 VPS', exact=True).select_option(str(machine['id']))
+                expect(form.locator('[name="rate"]')).to_have_value('1')
                 if protocol == 'vless':
                     form.locator('[name="reality_server_name"]').fill('www.example.com')
                     form.get_by_role('button', name='生成新密钥对', exact=True).click()
                     expect(form.locator('[name="reality_public_key"]')).to_have_value(re.compile(r'^[A-Za-z0-9_-]{43}$'))
                     assert len(form.locator('[name="reality_private_key"]').input_value()) == 43
                 else:
+                    form.locator('[name="rate"]').fill('2')
                     form.locator('[name="tls_server_name"]').fill('hy.example.test')
                     form.get_by_label('启用 Salamander 混淆', exact=True).check()
                     form.get_by_label('混淆密码', exact=True).fill('test-obfs-private-key')
@@ -191,16 +193,50 @@ def main():
             reality = next(node for node in owned_nodes if node['type'] == 'vless')
             hy2 = next(node for node in owned_nodes if node['type'] == 'hysteria')
             assert reality['machine_id'] == machine['id']
+            assert float(reality['rate']) == 1
+            assert float(hy2['rate']) == 2
             assert reality['protocol_settings']['tls'] == 2
             assert hy2['protocol_settings']['version'] == 2
             assert hy2['protocol_settings']['obfs']['open'] is True
+            expect(table_row(node_names[0])).to_contain_text('额度倍率 1×')
+            expect(table_row(node_names[1])).to_contain_text('额度倍率 2×')
             page.get_by_role('button', name='编辑节点 ' + node_names[0], exact=True).click()
             form = dialog('编辑节点')
             expect(form.locator('[name="reality_server_name"]')).to_have_value('www.example.com')
+            rate = form.locator('[name="rate"]')
+            assert float(rate.input_value()) == 1
+            invalid_submissions = []
+
+            def track_invalid_submission(request):
+                if request.method == 'POST' and urlsplit(request.url).path.endswith('/server/manage/save'):
+                    invalid_submissions.append(request.url)
+
+            page.on('request', track_invalid_submission)
+            for invalid in ['-0.01', '100.01', '0.001', '']:
+                rate.fill(invalid)
+                assert not rate.evaluate('(input) => input.checkValidity()'), f'Invalid rate accepted: {invalid}'
+                form.get_by_role('button', name='保存节点', exact=True).click()
+                expect(form).to_be_visible()
+            page.remove_listener('request', track_invalid_submission)
+            assert not invalid_submissions, 'An invalid rate was sent to the node API'
+            rate.fill('.5')
             form.get_by_label('标签', exact=True).fill('private, tokyo')
             action('server/manage/save', lambda: form.get_by_role('button', name='保存节点', exact=True).click())
+            expect(table_row(node_names[0])).to_contain_text('额度倍率 0.5×')
+            for previous, value, label in [(0.5, '0', '额度倍率 0× · 不扣额度'), (0, '0.5', '额度倍率 0.5×')]:
+                page.get_by_role('button', name='编辑节点 ' + node_names[0], exact=True).click()
+                form = dialog('编辑节点')
+                assert float(form.locator('[name="rate"]').input_value()) == previous
+                form.locator('[name="rate"]').fill(value)
+                action('server/manage/save', lambda: form.get_by_role('button', name='保存节点', exact=True).click())
+                expect(table_row(node_names[0])).to_contain_text(label)
+            page.get_by_role('button', name='编辑节点 ' + node_names[1], exact=True).click()
+            assert float(dialog('编辑节点').locator('[name="rate"]').input_value()) == 2
+            page.keyboard.press('Escape')
+            expect(page.locator('dialog[open]')).to_have_count(0)
             screenshot('03-nodes-desktop')
             passed('VLESS/REALITY 与 Hysteria2 创建、密钥生成、持久化与编辑')
+            passed('节点倍率默认 1×、0.5×/2×/0×保存回读和列表展示，拒绝非法范围与精度')
 
             nav('成员与订阅')
             member_name = prefix + ' · 家人'
@@ -217,6 +253,8 @@ def main():
             form.get_by_role('button', name='复制订阅链接', exact=True).click()
             assert 'flag=sing-box' in page.evaluate('navigator.clipboard.readText()')
             close_dialog()
+            expect(table_row(member_name)).to_contain_text('实际 0 B')
+            expect(table_row(member_name)).to_contain_text('额度已用 0 B · 不限额度')
             document = json.dumps(subscription(subscribe_url), ensure_ascii=False)
             assert all(name in document for name in node_names)
             passed('成员无密码创建、默认不限/永久/共享、专属订阅复制')
@@ -240,7 +278,7 @@ def main():
             form.get_by_label('流量硬上限（GiB）', exact=True).fill('0')
             changed = action('user/update', lambda: form.get_by_role('button', name='保存更改', exact=True).click())
             assert changed['server_ids'] == [reality['id']] and changed['transfer_enable'] == 0
-            expect(member_row(member_name)).to_contain_text('额度用尽')
+            expect(table_row(member_name)).to_contain_text('额度用尽')
             subscription(subscribe_url, 403)
             page.get_by_role('button', name='编辑 ' + member_name, exact=True).click()
             form = dialog('编辑成员')

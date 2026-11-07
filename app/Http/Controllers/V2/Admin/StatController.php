@@ -111,7 +111,12 @@ class StatController extends Controller
             'todayTraffic' => $this->getTrafficTotals(Carbon::today()->timestamp, Carbon::tomorrow()->timestamp),
             'monthTraffic' => $this->getTrafficTotals($currentMonthStart, Carbon::tomorrow()->timestamp),
             'totalTraffic' => $this->getTrafficTotals(),
-            'trafficAccounting' => ['basis' => 'actual_bytes', 'changed_at' => admin_setting('traffic_accounting_changed_at'), 'legacy_note' => '节点统计为实际字节；旧成员额度累计可能包含迁移前折算量。'],
+            'trafficAccounting' => [
+                'basis' => 'actual_bytes',
+                'changed_at' => admin_setting('traffic_accounting_changed_at'),
+                'description' => '节点与成员流量统计为实际字节；成员额度按各节点倍率累计，旧历史额度单独保留。',
+                'legacy_note' => '迁移前的历史额度可能含旧倍率折算量，不计入实际流量。',
+            ],
         ];
     }
 

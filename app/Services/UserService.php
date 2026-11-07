@@ -35,10 +35,16 @@ class UserService
 
     public function trafficFetch(Server $server, string $protocol, array $data): void
     {
+        // Callers may hold an old node model. Freeze the database rate at
+        // report receipt, not when a queue worker eventually handles the job.
+        $current = Server::whereKey($server->getKey())->first(['rate']);
+        if (!$current) return;
         $snapshot = $server->toArray();
+        $snapshot['rate'] = $current->rate;
+        $rateHundredths = $current->getRateHundredths();
         $timestamp = now()->startOfDay()->timestamp;
-        collect($data)->chunk(1000)->each(function ($chunk) use ($timestamp, $snapshot, $protocol) {
-            TrafficFetchJob::dispatch($snapshot, $chunk->toArray(), $protocol, $timestamp);
+        collect($data)->chunk(1000)->each(function ($chunk) use ($timestamp, $snapshot, $protocol, $rateHundredths) {
+            TrafficFetchJob::dispatch($snapshot, $chunk->toArray(), $protocol, $timestamp, $rateHundredths);
             StatUserJob::dispatch($snapshot, $chunk->toArray(), $protocol, 'd');
             StatServerJob::dispatch($snapshot, $chunk->toArray(), $protocol, 'd');
         });

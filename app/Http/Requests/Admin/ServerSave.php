@@ -132,7 +132,8 @@ class ServerSave extends FormRequest
             'custom_routes' => 'nullable|array',
             'cert_config' => 'nullable|array',
             'group_ids' => 'prohibited',
-            'rate' => 'prohibited', 'rate_time_enable' => 'prohibited', 'rate_time_ranges' => 'prohibited',
+            'rate' => 'sometimes|numeric|between:0,100|decimal:0,2',
+            'rate_time_enable' => 'missing', 'rate_time_ranges' => 'missing',
             'protocol_settings' => 'array',
             'transfer_enable' => 'nullable|integer|min:0',
         ];
@@ -238,6 +239,7 @@ class ServerSave extends FormRequest
     public function attributes(): array
     {
         return [
+            'rate' => '固定流量倍率',
             'protocol_settings.cipher' => '加密方式',
             'protocol_settings.obfs' => '混淆类型',
             'protocol_settings.network' => '传输协议',

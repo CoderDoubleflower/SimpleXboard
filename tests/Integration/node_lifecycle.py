@@ -179,6 +179,52 @@ async def run():
         return await api.request("GET", "/api/v2/server/user", authenticated=False,
                                  query={"token": server_token, "node_id": node["id"]})
 
+    async def node_records():
+        response = await api.admin("server/manage/getNodes", method="GET")
+        return {node["id"]: node for node in response["data"]}
+
+    async def set_rate(node, rate):
+        current = (await node_records())[node["id"]]
+        payload = {field: current[field] for field in
+                   ["id", "type", "name", "host", "port", "server_port", "protocol_settings"]}
+        await api.admin("server/manage/save", {**payload, "rate": rate})
+        saved = (await node_records())[node["id"]]
+        if float(saved["rate"]) != rate:
+            raise CheckFailed("Saved node multiplier did not persist")
+
+    async def report_traffic(node, upload, download):
+        await api.request("POST", "/api/v2/server/report", authenticated=False, data={
+            "token": server_token, "node_id": node["id"],
+            "traffic": {str(member["id"]): [upload, download]},
+        })
+
+    async def wait_usage(upload, download, actual_upload, actual_download, eligible=True):
+        deadline = time.monotonic() + timeout
+        while True:
+            detail = (await api.request("GET", api.admin_path + "user/getUserInfoById", query={"id": member["id"]}))["data"]
+            if (detail["u"], detail["d"], detail["actual_u"], detail["actual_d"], detail["eligible"]) == (
+                    upload, download, actual_upload, actual_download, eligible):
+                return detail
+            if time.monotonic() >= deadline:
+                raise CheckFailed("Worker did not persist expected actual bytes and multiplier-adjusted quota")
+            await asyncio.sleep(0.2)
+
+    async def wait_actual_stats(upload, download, expected_nodes):
+        deadline = time.monotonic() + timeout
+        while True:
+            current_nodes = await node_records()
+            records = (await api.request("GET", api.admin_path + "stat/getStatUser", query={"user_id": member["id"]}))["data"]
+            daily = [record for record in records if record["record_type"] == "d"]
+            totals = (sum(int(record["u"]) for record in daily), sum(int(record["d"]) for record in daily))
+            overview = (await api.admin("stat/getStats", method="GET"))["data"]["todayTraffic"]
+            node_matches = all((int(current_nodes[node_id]["u"]), int(current_nodes[node_id]["d"])) == counts
+                               for node_id, counts in expected_nodes.items())
+            if node_matches and totals == (upload, download) and overview["total"] == upload + download:
+                return
+            if time.monotonic() >= deadline:
+                raise CheckFailed("Member, node or overview statistics did not retain actual bytes")
+            await asyncio.sleep(0.2)
+
     try:
         login = await api.request("POST", "/api/v1/passport/auth/login", authenticated=False, data={
             "email": os.environ["E2E_ADMIN_EMAIL"], "password": os.environ["E2E_ADMIN_PASSWORD"],
@@ -246,20 +292,71 @@ async def run():
         record("Direct access changes revoke nodes outside current grant", started)
         await delta("user/update", "add", {"id": member["id"], "access_mode": "all"}, "Restore shared enabled-node access")
 
+        started = time.monotonic()
+        current_nodes = await node_records()
+        if any(float(current_nodes[node["id"]]["rate"]) != 1 for node in nodes):
+            raise CheckFailed("Fresh nodes must default to a 1x multiplier")
+        await set_rate(nodes[0], 0.5)
+        await set_rate(nodes[1], 2)
+        await report_traffic(nodes[0], 20, 30)
+        await report_traffic(nodes[1], 20, 30)
+        await wait_usage(50, 75, 40, 60)
+        await wait_actual_stats(40, 60, {nodes[0]["id"]: (20, 30), nodes[1]["id"]: (20, 30)})
+        record("Different node rates charge quota while all statistics retain actual bytes", started)
+
+        started = time.monotonic()
+        await set_rate(nodes[0], 3)
+        await wait_usage(50, 75, 40, 60)
+        await report_traffic(nodes[0], 2, 4)
+        await wait_usage(56, 87, 42, 64)
+        if any(socket.closed for socket in sockets):
+            raise CheckFailed("Editing a panel-side multiplier interrupted a node connection")
+        record("Rate edits affect subsequent reports without rewriting history or reconnecting nodes", started)
+
+        started = time.monotonic()
+        await set_rate(nodes[0], 0.5)
+        await report_traffic(nodes[0], 1, 1)
+        await wait_usage(56, 87, 43, 65)
+        await report_traffic(nodes[0], 1, 1)
+        await wait_usage(57, 88, 44, 66)
+        record("Fractional bytes accumulate accurately across separate queued reports", started)
+
+        started = time.monotonic()
+        await set_rate(nodes[0], 0)
+        await report_traffic(nodes[0], 7, 9)
+        await wait_usage(57, 88, 51, 75)
+        await wait_actual_stats(51, 75, {nodes[0]["id"]: (31, 45), nodes[1]["id"]: (20, 30)})
+        record("Zero-rate node records real traffic without charging an unlimited member", started)
+
+        await delta("user/update", "remove", {"id": member["id"], "transfer_enable": 0}, "Zero member quota remains unavailable even on a zero-rate node")
+        if any(user["id"] == member["id"] for user in (await full_pull(nodes[0]))["users"]):
+            raise CheckFailed("Zero-rate node bypassed a zero member quota")
+        await api.request("GET", "/s/" + member["token"], authenticated=False, expected=403)
+        await delta("user/update", "add", {"id": member["id"], "transfer_enable": None}, "Unlimited eligibility survives weighted and zero-rate usage")
+
+        await delta("traffic-reset/reset-user", "add", {"user_id": member["id"], "reason": "Isolated multiplier integration check"},
+                    "Manual reset clears quota and actual counters before the next accounting period")
+        await wait_usage(0, 0, 0, 0)
+        await set_rate(nodes[0], 2)
+
         await delta("user/update", "add", {"id": member["id"], "transfer_enable": 50}, "Set positive hard usage limit")
         marks = [socket.mark() for socket in sockets]
         started = time.monotonic()
-        await api.request("POST", "/api/v2/server/report", authenticated=False, data={
-            "token": server_token, "node_id": nodes[0]["id"], "traffic": {str(member["id"]): [24, 26]},
-        })
+        await report_traffic(nodes[0], 12, 13)
         await asyncio.gather(*[socket.wait("sync.user.delta", lambda msg: msg["data"].get("action") == "remove" and contains_user(msg, member["id"]), after=mark)
                               for socket, mark in zip(sockets, marks)])
         detail = await api.request("GET", api.admin_path + "user/getUserInfoById", query={"id": member["id"]})
-        if detail["data"]["total_used"] != 50 or detail["data"]["actual_u"] != 24 or detail["data"]["eligible"]:
-            raise CheckFailed("Actual byte accounting or quota exhaustion is inconsistent")
-        record("Traffic report reaches cap and revokes through quota worker", started)
+        if detail["data"]["total_used"] != 50 or detail["data"]["actual_u"] != 12 or detail["data"]["actual_d"] != 13 or detail["data"]["eligible"]:
+            raise CheckFailed("Weighted quota exhaustion is inconsistent with actual byte accounting")
+        for node in nodes:
+            if any(user["id"] == member["id"] for user in (await full_pull(node))["users"]):
+                raise CheckFailed("Weighted quota exhaustion did not revoke HTTP full pulls")
+        await api.request("GET", "/s/" + member["token"], authenticated=False, expected=403)
+        record("Weighted usage reaches cap and revokes WebSocket, HTTP and subscription access", started)
         await delta("traffic-reset/reset-user", "add", {"user_id": member["id"], "reason": "Isolated integration check"}, "Manual usage reset restores limited member")
         await delta("user/update", "add", {"id": member["id"], "transfer_enable": None}, "Null limit remains explicitly unlimited")
+        await set_rate(nodes[0], 1)
+        await set_rate(nodes[1], 1)
 
         started = time.monotonic()
         mark = sockets[0].mark()
