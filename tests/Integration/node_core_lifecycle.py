@@ -375,7 +375,28 @@ def main():
     env = os.environ.copy()
     env["SSL_CERT_FILE"] = str(cert)
     processes = Processes(artifacts, env)
-    origin = None
+    expected = ("SimpleXboard real machine lifecycle " + secrets.token_hex(16)).encode()
+
+    class OriginHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(expected)))
+            self.end_headers()
+            self.wfile.write(expected)
+
+        def log_message(self, *_):
+            pass
+
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), OriginHandler)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    target = f"http://127.0.0.1:{origin.server_port}/lifecycle-proof"
+    # The upstream core intentionally blocks private destinations. Allow only
+    # this test origin's exact address AND TCP port through the supported raw
+    # custom-route option in this temporary agent config; production defaults
+    # remain intact. Bind first so the random destination port cannot be reused.
+    origin_route = {"ip_cidr": ["127.0.0.1/32"], "port": [origin.server_port],
+                    "network": ["tcp"], "outbound": "direct"}
+    result["test_origin_route"] = origin_route
     blocker = None
     clients = {}
     agent = None
@@ -383,7 +404,8 @@ def main():
         decoy = processes.start("node-core-tls-handshake", ["openssl", "s_server", "-accept", f"127.0.0.1:{decoy_port}",
                                   "-cert", str(cert), "-key", str(key), "-tls1_3", "-alpn", "h2,http/1.1", "-www", "-quiet"])
         wait_tcp(decoy_port, decoy)
-        agent_config = {"kernel": {"type": "singbox", "log_level": "warn", "config_dir": str(work / "kernel")},
+        agent_config = {"kernel": {"type": "singbox", "log_level": "warn", "config_dir": str(work / "kernel"),
+                                   "custom_route": [origin_route]},
                         "log": {"level": "info"}, "health_port": health_port,
                         "node": {"push_interval": 5, "pull_interval": 2, "track_interval": 1},
                         "ws": {"status_interval": 1, "backoff_initial": 1, "backoff_max": 2},
@@ -459,21 +481,6 @@ def main():
             check_panel(api, node["id"], True, agent, control=True)
         eventually(lambda: health(health_port, "/readyz")[0] == 200, "all instances ready", agent)
 
-        expected = ("SimpleXboard real machine lifecycle " + secrets.token_hex(16)).encode()
-
-        class OriginHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(expected)))
-                self.end_headers()
-                self.wfile.write(expected)
-
-            def log_message(self, *_):
-                pass
-
-        origin = ThreadingHTTPServer(("127.0.0.1", 0), OriginHandler)
-        threading.Thread(target=origin.serve_forever, daemon=True).start()
-        target = f"http://127.0.0.1:{origin.server_port}/lifecycle-proof"
         result["mihomo_version"] = subprocess.check_output([mihomo, "-v"], text=True).strip().splitlines()[0]
         result["mihomo_sha256"] = hashlib.sha256(Path(mihomo).read_bytes()).hexdigest()
         require("1.19.29" in result["mihomo_version"], "Use the reported mihomo v1.19.29 client")
@@ -505,6 +512,10 @@ def main():
                        "--connect-timeout", "2", "--max-time", "4", target]
             sent = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=6)
             if success:
+                if sent.returncode != 0 or sent.stdout != expected:
+                    result["failed_proxy_request"] = {"node_id": node["id"], "curl_exit": sent.returncode,
+                        "stderr": sent.stderr.decode(errors="replace")[:2000], "response_bytes": len(sent.stdout),
+                        "expected_body_matched": sent.stdout == expected}
                 require(sent.returncode == 0 and sent.stdout == expected, "Actual REALITY/Vision HTTP request failed")
             else:
                 require(sent.returncode != 0, "Proxy request bypassed a stopped node core")
