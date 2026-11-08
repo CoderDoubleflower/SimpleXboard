@@ -71,7 +71,7 @@ jobs:
       - name: Build the fixed node
         working-directory: .node-source
         run: |
-          CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags "-s -w -X main.version=v1.13-simplexboard.1 -X main.commit=0a29338+${GITHUB_SHA:0:7} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/xboard-node" ./cmd/xboard-node
+          CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags "-s -w -X main.version=v1.13-simplexboard.1 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/xboard-node" ./cmd/xboard-node
       - name: Verify machine lifecycle through real REALITY and mihomo traffic
         timeout-minutes: 8
         run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-fixed -- python tests/Integration/node_core_lifecycle.py --xboard-node "$RUNNER_TEMP/xboard-node" --mihomo "$RUNNER_TEMP/mihomo"

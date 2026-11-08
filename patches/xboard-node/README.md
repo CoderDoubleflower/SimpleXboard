@@ -34,7 +34,7 @@ go test -p 2 -tags 'with_quic,with_utls,with_wireguard,with_acme,with_clash_api'
 go test -p 2 -race -tags 'with_quic,with_utls,with_wireguard,with_acme,with_clash_api' ./internal/service ./internal/controlplane ./internal/machine ./cmd/xboard-node
 CGO_ENABLED=0 go build -buildvcs=false -trimpath \
   -tags 'with_quic,with_utls,with_wireguard,with_acme,with_clash_api' \
-  -ldflags '-s -w -X main.version=v1.13-simplexboard.1 -X main.commit=0a29338+simplexboard' \
+  -ldflags '-s -w -X main.version=v1.13-simplexboard.1' \
   -o xboard-node ./cmd/xboard-node
 sha256sum xboard-node
 ```

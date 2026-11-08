@@ -220,6 +220,91 @@ class NodeHealthTest extends TestCase
         $this->assertSame(1, $stats['readyNodes']);
     }
 
+    public function test_parent_link_does_not_cross_independently_bound_machine_health(): void
+    {
+        $a = $this->machine(['token' => 'machine-a']);
+        $b = $this->machine(['token' => 'machine-b']);
+        $parent = $this->node(['machine_id' => $a->id]);
+        $child = $this->node(['machine_id' => $b->id, 'parent_id' => $parent->id]);
+
+        $this->postJson('/api/v2/server/report', [
+            'machine_id' => $a->id, 'token' => 'machine-a', 'node_id' => $parent->id,
+            'metrics' => ['core_status' => $this->core('running', true, 1, 1)],
+        ])->assertOk();
+        NodeHealthService::touchControl($parent->id);
+        $parent = $parent->fresh();
+        $this->assertTrue($parent->core_ready);
+        $this->assertTrue($parent->control_online);
+        $this->assertTrue($parent->control_recent);
+        $this->assertTrue($parent->machine_online);
+        $this->assertSame('unknown', $child->core_status['state']);
+        $this->assertFalse($child->core_ready);
+        $this->assertFalse($child->control_online);
+        $this->assertFalse($child->control_recent);
+        $this->assertFalse($child->machine_online);
+
+        $this->postJson('/api/v2/server/report', [
+            'machine_id' => $b->id, 'token' => 'machine-b', 'node_id' => $child->id,
+            'metrics' => ['core_status' => $this->core('error', false, 1, 0, 'child failed')],
+        ])->assertOk();
+        $child = $child->fresh();
+        $this->assertTrue($parent->core_ready);
+        $this->assertSame('error', $child->core_status['state']);
+        $this->assertFalse($child->core_ready);
+        $this->assertTrue($child->control_recent);
+        $this->assertTrue($child->machine_online);
+
+        $this->postJson('/api/v2/server/report', [
+            'machine_id' => $a->id, 'token' => 'machine-a', 'node_id' => $parent->id,
+            'metrics' => ['core_status' => $this->core('waiting_users', false, 0, 0)],
+        ])->assertOk();
+        $this->postJson('/api/v2/server/report', [
+            'machine_id' => $b->id, 'token' => 'machine-b', 'node_id' => $child->id,
+            'metrics' => ['kernel_status' => true],
+        ])->assertOk();
+        $this->assertFalse($parent->core_ready);
+        $this->assertSame('waiting_users', $parent->core_status['state']);
+        $this->assertTrue($child->core_ready);
+        $this->assertSame('kernel_status', $child->core_status['source']);
+        $this->postJson('/api/v2/server/report', [
+            'machine_id' => $b->id, 'token' => 'machine-b', 'node_id' => $parent->id,
+            'metrics' => ['kernel_status' => true],
+        ])->assertStatus(400);
+        $this->assertFalse($parent->core_ready);
+    }
+
+    public function test_unbound_alias_reads_parent_health_but_cannot_overwrite_it(): void
+    {
+        $machine = $this->machine(['last_seen_at' => now()->timestamp]);
+        $parent = $this->node(['machine_id' => $machine->id]);
+        $alias = $this->node(['parent_id' => $parent->id]);
+        $this->report($parent, ['metrics' => ['core_status' => $this->core('running', true, 1, 1)]])->assertOk();
+        NodeHealthService::touchControl($parent->id);
+        $received = $parent->core_status['updated_at'];
+        $this->assertSame($parent->core_status, $alias->core_status);
+        $this->assertTrue($alias->core_ready);
+        $this->assertTrue($alias->control_online);
+        $this->assertTrue($alias->control_recent);
+        $this->assertTrue($alias->machine_online);
+
+        $this->travel(10)->seconds();
+        $this->report($alias, ['metrics' => ['kernel_status' => false]])->assertOk();
+        $this->assertTrue($parent->core_ready);
+        $this->assertSame($received, $parent->core_status['updated_at']);
+        $this->assertSame($parent->core_status, $alias->core_status);
+
+        // Binding an alias to a machine selects its own report and control
+        // state immediately; it no longer inherits the healthy parent.
+        $independent = $this->machine(['token' => 'independent-machine']);
+        $alias->forceFill(['machine_id' => $independent->id])->saveQuietly();
+        $alias = $alias->fresh();
+        $this->assertSame('stopped', $alias->core_status['state']);
+        $this->assertFalse($alias->core_ready);
+        $this->assertFalse($alias->control_online);
+        $this->assertFalse($alias->machine_online);
+        $this->assertTrue($parent->core_ready);
+    }
+
     public function test_machine_control_lifecycle_handles_empty_sets_removed_nodes_and_replaced_sockets(): void
     {
         $node = $this->node();
@@ -261,9 +346,9 @@ class NodeHealthTest extends TestCase
         return ['state' => $state, 'ready' => $ready, 'users' => $users, 'applied_users' => $applied, 'error' => $error];
     }
 
-    private function machine(): ServerMachine
+    private function machine(array $attributes = []): ServerMachine
     {
-        return ServerMachine::create(['name' => 'Machine', 'token' => 'machine-token', 'is_active' => true]);
+        return ServerMachine::create($attributes + ['name' => 'Machine', 'token' => 'machine-token', 'is_active' => true]);
     }
 
     private function node(array $attributes = []): Server

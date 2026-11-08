@@ -51,6 +51,7 @@ class HTTPRelay:
         self.block_poll = False
         self.lock = threading.Lock()
         self.successful_pulls = Counter()
+        self.successful_machine_reports = Counter()
         self.last_metrics = {}
         owner = self
 
@@ -69,10 +70,15 @@ class HTTPRelay:
             def forward(self):
                 parsed = urlparse(self.path)
                 query = parse_qs(parsed.query)
-                node_id = int(query.get("node_id", ["0"])[0])
                 is_poll = parsed.path in ("/api/v2/server/config", "/api/v2/server/user")
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length) if length else None
+                request_data = json.loads(body) if body else {}
+                # Node GET requests carry identity in the query; JSON report
+                # requests carry it in the body. Authentication is forwarded
+                # unchanged and never included in the evidence or logs.
+                node_id = int(query.get("node_id", [request_data.get("node_id", 0)])[0])
+                machine_id = int(query.get("machine_id", [request_data.get("machine_id", 0)])[0])
                 if is_poll and owner.block_poll:
                     code, payload, headers = 503, b'{"error":"test polling gate"}', {}
                 else:
@@ -90,6 +96,8 @@ class HTTPRelay:
                         with owner.lock:
                             if is_poll:
                                 owner.successful_pulls[(node_id, parsed.path)] += 1
+                            if parsed.path == "/api/v2/server/machine/status":
+                                owner.successful_machine_reports[machine_id] += 1
                             if parsed.path == "/api/v2/server/report" and body:
                                 report = json.loads(body)
                                 owner.last_metrics[node_id] = report.get("metrics", {})
@@ -112,6 +120,10 @@ class HTTPRelay:
     def pulls(self, node_id):
         with self.lock:
             return self.successful_pulls[(node_id, "/api/v2/server/user")]
+
+    def machine_reports(self, machine_id):
+        with self.lock:
+            return self.successful_machine_reports[machine_id]
 
     def close(self):
         self.server.shutdown()
@@ -388,16 +400,20 @@ def main():
                        "empty REST bootstrap and machine WebSocket full snapshot", agent)
             require(not listening(node["server_port"]), "An empty bootstrap unexpectedly started its listener")
         require(health(health_port, "/healthz")[0] == 200, "Process liveness failed at empty bootstrap")
-        for node in nodes:
-            eventually(lambda node=node: panel_node(api, node["id"]).get("machine_online") is True,
-                       "machine heartbeat while proxy has zero users", agent)
+        for node, machine in zip(nodes, machines):
+            eventually(lambda node=node, machine=machine: http.machine_reports(machine["id"]) > 0
+                       and panel_node(api, node["id"]).get("machine_online") is True,
+                       "successful real machine status report while proxy has zero users", agent)
         if not args.expect_stalled:
             require(health(health_port, "/readyz")[0] == 503, "Empty machine instances were incorrectly ready")
             for node in nodes:
                 check_panel(api, node["id"], False, agent, control=True)
                 eventually(lambda node=node: panel_node(api, node["id"]).get("core_status", {}).get("state") == "waiting_users",
                            "explicit waiting-users core state", agent)
-        result["phases"].append({"phase": "empty_bootstrap", "users": 0, "listeners": 0, "machine_instances": 2, "machine_heartbeats": True})
+        result["phases"].append({"phase": "empty_bootstrap", "users": 0, "listeners": 0, "machine_instances": 2,
+                                  "machine_heartbeats": True,
+                                  "successful_machine_status_reports": {str(machine["id"]): http.machine_reports(machine["id"])
+                                                                        for machine in machines}})
 
         # Hold REST snapshots unavailable while proving the WS delivery paths.
         # Dropping A's deltas forces its 0 -> 1 transition to use a real full sync.

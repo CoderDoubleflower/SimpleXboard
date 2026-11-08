@@ -51,12 +51,14 @@ class NodeHealthService
 
         $report['updated_at'] = now()->timestamp;
         $report['expires_at'] = $report['updated_at'] + self::reportTtl();
-        Cache::put(self::coreKey($node), $report, max(86400, self::reportTtl() * 2));
+        // A report is authorized for this exact node. Never let a child's
+        // parent_id redirect a write into another node or machine's cache.
+        Cache::put(self::coreKey($node, $node->id), $report, max(86400, self::reportTtl() * 2));
     }
 
     public static function coreStatus(Server $node): array
     {
-        $report = Cache::get(self::coreKey($node));
+        $report = Cache::get(self::coreKey($node, $node->healthSourceId()));
         if (!is_array($report)) {
             return [
                 'state' => 'unknown', 'ready' => false, 'users' => null,
@@ -88,9 +90,9 @@ class NodeHealthService
         return (bool) Cache::get("node_ws_alive:{$nodeId}", false);
     }
 
-    private static function coreKey(Server $node): string
+    private static function coreKey(Server $node, int $nodeId): string
     {
-        return CacheKey::get('SERVER_' . strtoupper($node->type) . '_CORE_STATUS', $node->parent_id ?: $node->id);
+        return CacheKey::get('SERVER_' . strtoupper($node->type) . '_CORE_STATUS', $nodeId);
     }
 
     private static function reportTtl(): int

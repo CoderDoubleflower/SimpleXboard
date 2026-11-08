@@ -416,20 +416,31 @@ class Server extends Model
         return $this->core_status['ready'] === true;
     }
 
+    /**
+     * Unbound child nodes retain the existing parent/alias health semantics.
+     * An explicit machine binding runs its own core, regardless of parent_id.
+     */
+    public function healthSourceId(): int
+    {
+        return (int) (!$this->machine_id && $this->parent_id ? $this->parent_id : $this->id);
+    }
+
     public function getControlOnlineAttribute(): bool
     {
-        return NodeHealthService::controlOnline($this->parent_id ?: $this->id);
+        return NodeHealthService::controlOnline($this->healthSourceId());
     }
 
     public function getControlRecentAttribute(): bool
     {
-        return $this->last_check_at !== null
-            && now()->timestamp - self::CHECK_INTERVAL < $this->last_check_at;
+        // last_check_at retains legacy parent inheritance for compatibility;
+        // health of an independently bound machine must use its own reports.
+        $lastContact = Cache::get(CacheKey::get('SERVER_' . strtoupper($this->type) . '_LAST_CHECK_AT', $this->healthSourceId()));
+        return $lastContact !== null && now()->timestamp - self::CHECK_INTERVAL < $lastContact;
     }
 
     public function getMachineOnlineAttribute(): ?bool
     {
-        $owner = $this->parent_id ? $this->parent : $this;
+        $owner = $this->healthSourceId() === (int) $this->id ? $this : $this->parent;
         if (!$owner?->machine_id) return null;
         $machine = $owner->machine;
         return $machine !== null && $machine->is_active && $machine->last_seen_at !== null

@@ -37,6 +37,8 @@
 
 管理台的“就绪节点”以及兼容字段 `is_online`、`onlineNodes` 使用核心就绪信息。机器心跳、用户拉取、流量上报、WebSocket pong 都不能单独证明核心可用。
 
+核心报告始终写入已认证的实际节点 ID，不能通过 `parent_id` 写入其他节点的状态。具有独立 `machine_id` 的节点读取自身核心、控制通道及机器状态；没有独立机器绑定的别名保留读取父节点状态的既有行为。
+
 支持的新报告为 `core_status: {state, ready, users, applied_users, error}`。WS 的 `node.status` 直接携带它；REST 的 `metrics` 或 `status` 可携带它。只接受真实 JSON 布尔值作为 `ready`。
 
 状态包括 `waiting_config`、`waiting_users`、`starting`、`running`、`error`、`stopped`。面板额外提供 `unknown` 和 `stale`：未收到明确报告时显示未知；收到报告超过 `max(300, server_push_interval × 3)` 秒时失效。时间采用面板接收时间，不接受节点自行给出的未来时间延长有效期。不包含核心字段的心跳不会刷新核心报告。
