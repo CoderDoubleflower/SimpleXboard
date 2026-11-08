@@ -20,6 +20,7 @@ class CacheKey
         'SERVER_*_LAST_PUSH_AT',       // 节点最后推送时间
         'SERVER_*_LOAD_STATUS',        // 节点负载状态
         'SERVER_*_LAST_LOAD_AT',       // 节点最后负载提交时间
+        'SERVER_*_CORE_STATUS',        // 核心就绪报告，与机器/控制通道独立
         'SERVER_*_METRICS',            // 节点指标数据
         'USER_ONLINE_CONN_*_*',        // 用户在线连接数 (特定节点类型_ID)
     ];

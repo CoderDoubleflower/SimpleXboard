@@ -226,6 +226,9 @@ small, .small { font-size: 12px; }
 .badge-warning { background: var(--warning-soft); color: var(--warning); }
 .badge-muted { background: var(--slate-100); color: var(--muted); }
 .badge-danger { background: var(--danger-soft); color: var(--danger); }
+.node-runtime-state { max-width: 300px; overflow-wrap: anywhere; }
+.runtime-error { color: var(--danger); font-size: 12px; }
+.runtime-error summary { min-height: 44px; padding-block: 10px; line-height: 24px; cursor: pointer; }
 .protocol-tag { display: inline-block; padding: 4px 8px; color: var(--slate-700); background: var(--surface-soft); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; white-space: nowrap; }
 .table-wrap { width: 100%; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; text-align: left; }
@@ -459,6 +462,8 @@ select.input { appearance: auto; padding-right: 20px; }
   td:first-child { grid-column: 1/-1; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
   td:first-child::before, td.actions-cell::before { display: none; }
   td.actions-cell { width: 100%; grid-column: 1/-1; align-items: flex-end; padding-top: 10px; border-top: 1px solid var(--line); }
+  td.runtime-cell { grid-column: 1/-1; }
+  .node-runtime-state { max-width: none; }
   tbody tr:last-child td:first-child { border-bottom: 1px solid var(--line); }
   .row-identity { min-width: 0; }
   .row-identity>span, .row-identity .log-uri { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }

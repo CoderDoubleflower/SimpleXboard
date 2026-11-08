@@ -4,6 +4,7 @@ namespace App\Http\Controllers\V2\Server;
 
 use App\Http\Controllers\Controller;
 use App\Services\ServerService;
+use App\Services\NodeHealthService;
 use App\WebSocket\NodeWorker;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -71,6 +72,11 @@ class ServerController extends Controller
         $metrics = $request->input('metrics');
         if (is_array($metrics) && !empty($metrics)) {
             ServerService::updateMetrics($node, $metrics);
+        }
+
+        // A structured status in the same report wins over compatibility metrics.
+        if (is_array($status['core_status'] ?? null) && !is_array($metrics['core_status'] ?? null)) {
+            NodeHealthService::report($node, $status);
         }
 
         return response()->json(['data' => true]);

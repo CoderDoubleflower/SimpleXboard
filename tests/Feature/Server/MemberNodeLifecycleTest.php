@@ -7,8 +7,13 @@ use App\Jobs\StatServerJob;
 use App\Jobs\StatUserJob;
 use App\Jobs\TrafficFetchJob;
 use App\Models\Server;
+use App\Models\ServerMachine;
 use App\Models\User;
 use App\Services\ServerService;
+use App\Services\NodeRegistry;
+use App\WebSocket\NodeEventHandlers;
+use Mockery;
+use Workerman\Connection\TcpConnection;
 use App\Services\UserService;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Facades\Artisan;
@@ -137,6 +142,73 @@ class MemberNodeLifecycleTest extends TestCase
         $this->assertSame([], ServerService::getAvailableServers($member));
         DB::transaction(fn () => $node->delete());
         $this->assertSame([], $this->lastUsers());
+    }
+
+    public function test_machine_full_delta_and_rest_reconciliation_agree_across_zero_one_zero_one_users(): void
+    {
+        $node = $this->node();
+        $machine = ServerMachine::create(['name' => 'Machine', 'token' => 'machine-token', 'is_active' => true]);
+        $node->forceFill(['machine_id' => $machine->id])->saveQuietly();
+        $this->listen([$node]);
+        $query = '?' . http_build_query(['machine_id' => $machine->id, 'token' => 'machine-token', 'node_id' => $node->id]);
+        $frames = [];
+        $conn = Mockery::mock(TcpConnection::class);
+        $conn->machineId = $machine->id;
+        $conn->machineNodeIds = [$node->id];
+        $conn->shouldReceive('send')->andReturnUsing(function ($payload) use (&$frames) {
+            $frames[] = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+            return true;
+        });
+        NodeRegistry::add($node->id, $conn);
+
+        try {
+            $initial = $this->getJson('/api/v2/server/user' . $query)->assertOk()->assertJsonCount(0, 'users');
+            $initialTag = $initial->headers->get('ETag');
+            NodeEventHandlers::pushFullSync($conn, $node);
+            $this->assertSame(['sync.config', 'sync.users'], array_column($frames, 'event'));
+            $this->assertSame([], $frames[1]['data']['users']);
+            $this->assertSame($node->id, $frames[1]['data']['node_id']);
+
+            $member = DB::transaction(fn () => $this->member(['access_mode' => 'restricted']));
+            foreach ([[$node->id], [], [$node->id]] as $grants) {
+                $this->messages = [];
+                $frames = [];
+                DB::transaction(fn () => app(UserService::class)->syncServerAccess($member, $grants));
+                $delta = collect($this->messages)->where('event', 'sync.user.delta')->last();
+                $this->assertSame($grants ? 'add' : 'remove', $delta['data']['action']);
+                $this->assertSame($member->id, $delta['data']['users'][0]['id']);
+                $pulled = $this->getJson('/api/v2/server/user' . $query)->assertOk()->json('users');
+                NodeEventHandlers::pushFullSync($conn, $node);
+                $this->assertSame($pulled, $frames[1]['data']['users']);
+                $this->assertCount(count($grants), $pulled);
+                if ($grants) {
+                    $this->assertSame($member->uuid, $pulled[0]['uuid']);
+                    $this->assertSame($pulled, $delta['data']['users']);
+                }
+            }
+
+            // An old empty snapshot's ETag cannot suppress the later nonempty state.
+            $this->withHeaders(['If-None-Match' => $initialTag])->getJson('/api/v2/server/user' . $query)
+                ->assertOk()->assertJsonCount(1, 'users');
+            $this->flushHeaders();
+
+            // Changes missed while disconnected are recovered by a real REST pull.
+            Cache::forget('node_ws_alive:' . $node->id);
+            $this->messages = [];
+            DB::transaction(fn () => app(UserService::class)->syncServerAccess($member, []));
+            $this->assertSame([], $this->messages);
+            $this->getJson('/api/v2/server/user' . $query)->assertOk()->assertJsonCount(0, 'users');
+            DB::transaction(fn () => app(UserService::class)->syncServerAccess($member, [$node->id]));
+            $this->assertSame([], $this->messages);
+            $pulled = $this->getJson('/api/v2/server/user' . $query)->assertOk()->json('users');
+            $frames = [];
+            NodeEventHandlers::pushFullSync($conn, $node);
+            NodeEventHandlers::pushFullSync($conn, $node);
+            $this->assertSame($pulled, $frames[1]['data']['users']);
+            $this->assertSame($pulled, $frames[3]['data']['users']);
+        } finally {
+            NodeRegistry::remove($node->id, $conn);
+        }
     }
 
     private function lastUsers(): array

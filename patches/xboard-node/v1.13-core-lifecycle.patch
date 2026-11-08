@@ -1,0 +1,1976 @@
+diff --git a/cmd/xboard-node/health.go b/cmd/xboard-node/health.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..df79982b34f1e426f765f3747545ae39c497dc32
+--- /dev/null
++++ b/cmd/xboard-node/health.go
+@@ -0,0 +1,79 @@
++package main
++
++import (
++	"encoding/json"
++	"net/http"
++	"sync"
++
++	"github.com/cedar2025/xboard-node/internal/service"
++)
++
++// Readiness aggregates every configured instance. The endpoint exposes only
++// counts/states, never panel addresses, credentials, or raw kernel errors.
++type readinessProbe struct {
++	mu        sync.RWMutex
++	expected  int
++	providers map[int]func() []service.CoreStatus
++}
++
++func newReadinessProbe() *readinessProbe {
++	return &readinessProbe{providers: make(map[int]func() []service.CoreStatus)}
++}
++func (p *readinessProbe) reset(expected int) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	p.expected = expected
++	p.providers = make(map[int]func() []service.CoreStatus)
++}
++func (p *readinessProbe) set(index int, fn func() []service.CoreStatus) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	p.providers[index] = fn
++}
++func (p *readinessProbe) handler() http.Handler {
++	mux := http.NewServeMux()
++	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "scope": "liveness"})
++	})
++	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
++		p.mu.RLock()
++		expected := p.expected
++		providers := make([]func() []service.CoreStatus, expected)
++		for i, fn := range p.providers {
++			if i < len(providers) {
++				providers[i] = fn
++			}
++		}
++		p.mu.RUnlock()
++		ready := expected > 0
++		nodes := make([]map[string]interface{}, 0)
++		for i, fn := range providers {
++			if fn == nil {
++				ready = false
++				continue
++			}
++			statuses := fn()
++			if len(statuses) == 0 {
++				ready = false
++			}
++			for _, s := range statuses {
++				nodeReady := s.State == "running" && s.Ready
++				if !nodeReady {
++					ready = false
++				}
++				nodes = append(nodes, map[string]interface{}{"instance": i, "state": s.State, "ready": nodeReady, "users": s.Users, "applied_users": s.AppliedUsers})
++			}
++		}
++		status := "not_ready"
++		code := http.StatusServiceUnavailable
++		if ready {
++			status = "ready"
++			code = http.StatusOK
++		}
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(code)
++		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": status, "scope": "proxy_readiness", "nodes": nodes})
++	})
++	return mux
++}
+diff --git a/cmd/xboard-node/health_test.go b/cmd/xboard-node/health_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2aba778af546711960e2a58c2418ea2bac2817e3
+--- /dev/null
++++ b/cmd/xboard-node/health_test.go
+@@ -0,0 +1,41 @@
++package main
++
++import (
++	"github.com/cedar2025/xboard-node/internal/service"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++func TestReadinessRequiresEveryConfiguredCore(t *testing.T) {
++	p := newReadinessProbe()
++	p.reset(2)
++	assert := func(path string, expected int) {
++		r := httptest.NewRecorder()
++		p.handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
++		if r.Code != expected {
++			t.Fatalf("%s status=%d want=%d body=%s", path, r.Code, expected, r.Body)
++		}
++		if strings.Contains(r.Body.String(), "sensitive-error") {
++			t.Fatal("health endpoint exposed raw kernel error")
++		}
++	}
++	assert("/healthz", 200)
++	assert("/readyz", 503)
++	p.set(0, func() []service.CoreStatus {
++		return []service.CoreStatus{{State: "running", Ready: true, Users: 1, AppliedUsers: 1}}
++	})
++	assert("/readyz", 503)
++	p.set(1, func() []service.CoreStatus { return []service.CoreStatus{{State: "error", Error: "sensitive-error"}} })
++	assert("/readyz", 503)
++	p.set(1, func() []service.CoreStatus {
++		return []service.CoreStatus{{State: "running", Ready: true, Users: 1, AppliedUsers: 1}}
++	})
++	assert("/readyz", 200)
++	p.set(1, func() []service.CoreStatus { return []service.CoreStatus{{State: "waiting_users"}} })
++	assert("/readyz", 503)
++	assert("/healthz", 200)
++	p.reset(1)
++	assert("/readyz", 503)
++}
+diff --git a/cmd/xboard-node/main.go b/cmd/xboard-node/main.go
+index 152c91e88e08d110f73390019b0db8156b711ce1..b018ca144010188768d0c1a20426452f4e3c1556 100644
+--- a/cmd/xboard-node/main.go
++++ b/cmd/xboard-node/main.go
+@@ -56,6 +56,7 @@ func main() {
+ 
+ // runWithReload restarts all node services when the config file changes.
+ func runWithReload(initialRoot *config.RootConfig, configPath string) {
++	probe := newReadinessProbe()
+ 	var healthSrv *http.Server
+ 	var healthPort int
+ 	startHealth := func(port int) {
+@@ -67,12 +68,7 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
+ 			nlog.Core().Error("failed to start health check listener", "port", port, "error", err)
+ 			os.Exit(1)
+ 		}
+-		mux := http.NewServeMux()
+-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+-			w.Header().Set("Content-Type", "application/json")
+-			w.WriteHeader(http.StatusOK)
+-			w.Write([]byte(`{"status":"ok"}`))
+-		})
++		mux := probe.handler()
+ 		healthSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+ 		healthPort = port
+ 		go func() {
+@@ -149,17 +145,19 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
+ 			startHealth(instances[0].HealthPort)
+ 		}
+ 
++		probe.reset(len(instances))
+ 		errCh := make(chan error, len(instances))
+ 		doneCh := make(chan struct{})
+ 		var wg sync.WaitGroup
+-		for _, instanceCfg := range instances {
+-			instanceCfg := instanceCfg
++		for instanceIndex, instanceCfg := range instances {
++			instanceIndex, instanceCfg := instanceIndex, instanceCfg
+ 			wg.Add(1)
+ 			go func() {
+ 				defer wg.Done()
+ 				if instanceCfg.IsMachineMode() {
+ 					nlog.Core().Info("starting machine instance", "instance", instanceCfg.InstanceID, "machine_id", instanceCfg.Machine.MachineID, "panel_url", instanceCfg.Panel.URL)
+ 					orch := machine.New(instanceCfg)
++					probe.set(instanceIndex, orch.CoreStatuses)
+ 					if err := orch.Run(ctx); err != nil {
+ 						nlog.Core().Error("machine instance exited with error", "instance", instanceCfg.InstanceID, "error", err)
+ 						errCh <- err
+@@ -169,6 +167,17 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
+ 				}
+ 				nodes := instanceCfg.ExpandNodes()
+ 				nlog.Core().Info("starting node instance", "instance", instanceCfg.InstanceID, "nodes", len(nodes), "panel_url", instanceCfg.Panel.URL)
++				services := make([]*service.Service, len(nodes))
++				for i, nodeCfg := range nodes {
++					services[i] = service.New(nodeCfg)
++				}
++				probe.set(instanceIndex, func() []service.CoreStatus {
++					states := make([]service.CoreStatus, 0, len(services))
++					for _, svc := range services {
++						states = append(states, svc.Status())
++					}
++					return states
++				})
+ 				var instanceWG sync.WaitGroup
+ 				for idx, nodeCfg := range nodes {
+ 					nodeCfg := nodeCfg
+@@ -186,7 +195,7 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
+ 								return
+ 							}
+ 						}
+-						svc := service.New(nodeCfg)
++						svc := services[idx]
+ 						if err := svc.Run(ctx); err != nil {
+ 							nlog.Core().Error("node service exited with error", "instance", nodeCfg.InstanceID, "node_id", nodeCfg.Panel.NodeID, "error", err)
+ 							errCh <- err
+diff --git a/internal/controlplane/machine.go b/internal/controlplane/machine.go
+index 8911c6073453b2348ba0c3e1e6ae192c69ca7919..8bdeed7190b7c3ea9a97aa0e38c75bff5052c618 100644
+--- a/internal/controlplane/machine.go
++++ b/internal/controlplane/machine.go
+@@ -143,3 +143,6 @@ func (p *MachinePanelControlPlane) Metrics() APIMetrics {
+ 	api := p.client.SnapshotMetrics()
+ 	return APIMetrics{Success: api.Success, Failure: api.Failure}
+ }
++
++// ResetSnapshot is called on the polling goroutine before a forced resync.
++func (p *MachinePanelControlPlane) ResetSnapshot() { p.client.ResetETags() }
+diff --git a/internal/controlplane/mailbox.go b/internal/controlplane/mailbox.go
+index 3dc4fb4a8b88291a213dba4bd0b89b6267b6c340..d81257d610583b24e6a3773395787e4539bf1619 100644
+--- a/internal/controlplane/mailbox.go
++++ b/internal/controlplane/mailbox.go
+@@ -32,6 +32,7 @@ type NodeMailbox struct {
+ 	needsReconcile   bool
+ 	hasFullUserState bool
+ 	notifyCh         chan struct{}
++	revision         uint64
+ }
+ 
+ func NewNodeMailbox() *NodeMailbox {
+@@ -60,6 +61,32 @@ func (m *NodeMailbox) SeedBaseline(users []model.UserSpec, config *model.NodeSpe
+ 	}
+ }
+ 
++// Revision is captured when REST reconciliation starts. A later push must not
++// be overwritten by the slower REST snapshot, even before the service drains it.
++func (m *NodeMailbox) Revision() uint64 {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	return m.revision
++}
++
++// RefreshBaseline commits an authoritative REST snapshot only if no push has
++// arrived or remains undrained. Later deltas then merge against this snapshot.
++func (m *NodeMailbox) RefreshBaseline(users []model.UserSpec, config *model.NodeSpec, expected uint64) bool {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	if m.revision != expected || m.dirtyUsers || m.dirtyConfig {
++		return false
++	}
++	if users != nil {
++		m.users = cloneUsers(users)
++		m.hasFullUserState = true
++	}
++	if config != nil {
++		m.config = cloneNodeSpec(config)
++	}
++	return true
++}
++
+ func (m *NodeMailbox) Apply(event Event) {
+ 	m.mu.Lock()
+ 	changed := false
+@@ -98,6 +125,9 @@ func (m *NodeMailbox) Apply(event Event) {
+ 			}
+ 		}
+ 	}
++	if changed && event.Type != EventSyncDevices {
++		m.revision++
++	}
+ 	m.mu.Unlock()
+ 
+ 	if changed {
+@@ -251,7 +281,7 @@ func applyUserDelta(users *[]model.UserSpec, action string, delta []model.UserSp
+ 			}
+ 			filtered = append(filtered, user)
+ 		}
+-		current = append([]model.UserSpec(nil), filtered...)
++		current = append([]model.UserSpec{}, filtered...)
+ 	default:
+ 		return false
+ 	}
+diff --git a/internal/controlplane/panel.go b/internal/controlplane/panel.go
+index ab93366e7d2051a90bcf4aa6d4c73fd9f6313111..7f70d955d0b1dbecd8082edbd87a4bb31ac58b28 100644
+--- a/internal/controlplane/panel.go
++++ b/internal/controlplane/panel.go
+@@ -182,3 +182,6 @@ func (p *panelPushClient) IsConnected() bool       { return p.inner.IsConnected(
+ func (p *panelPushClient) SendDeviceReport(devices map[int][]string) {
+ 	p.inner.SendDeviceReport(devices)
+ }
++
++// ResetSnapshot is called on the polling goroutine before a forced resync.
++func (p *PanelControlPlane) ResetSnapshot() { p.client.ResetETags() }
+diff --git a/internal/machine/lifecycle_test.go b/internal/machine/lifecycle_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..dbd1a12e17da0ff824672a448d003de7b56b68d5
+--- /dev/null
++++ b/internal/machine/lifecycle_test.go
+@@ -0,0 +1,91 @@
++package machine
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/cedar2025/xboard-node/internal/config"
++	"github.com/cedar2025/xboard-node/internal/controlplane"
++	"github.com/cedar2025/xboard-node/internal/panel"
++)
++
++func TestRemoveNodeDuringInitialConfigPreservesReplacement(t *testing.T) {
++	entered, release := make(chan struct{}), make(chan struct{})
++	var enterOnce, releaseOnce sync.Once
++	unblock := func() { releaseOnce.Do(func() { close(release) }) }
++	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if strings.HasSuffix(r.URL.Path, "/config") {
++			enterOnce.Do(func() { close(entered); <-release })
++		}
++		http.Error(w, "fixture unavailable", http.StatusServiceUnavailable)
++	}))
++	defer ts.Close()
++	defer unblock()
++	o := New(&config.Config{
++		Panel:   config.PanelConfig{URL: ts.URL},
++		Machine: &config.MachineConfig{MachineID: 1},
++		Kernel:  config.KernelConfig{Type: "singbox", ConfigDir: t.TempDir()},
++	})
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	started := make(chan struct{})
++	go func() { o.startNode(ctx, panel.MachineNode{ID: 1, Type: "vless"}); close(started) }()
++	select {
++	case <-entered:
++	case <-time.After(3 * time.Second):
++		t.Fatal("initial config not requested")
++	}
++	stopped := make(chan struct{})
++	go func() { o.stopNode(1); close(stopped) }()
++	deadline := time.Now().Add(3 * time.Second)
++	for {
++		o.mu.Lock()
++		_, exists := o.nodes[1]
++		o.mu.Unlock()
++		if !exists {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("node not removed")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	// A new discovery may register this ID while the old config request is
++	// still returning. Old startup/exit must only touch its own generation.
++	mb := controlplane.NewNodeMailbox()
++	replacement := &nodeHandle{mailbox: mb}
++	o.mu.Lock()
++	o.nodes[1] = replacement
++	o.mu.Unlock()
++	o.eventsMu.Lock()
++	o.mailboxes[1] = mb
++	o.eventsMu.Unlock()
++	status := make(chan controlplane.StatusChange, 1)
++	o.registerNode(1, mb, status)
++	unblock()
++	select {
++	case <-started:
++	case <-time.After(3 * time.Second):
++		t.Fatal("startup did not complete")
++	}
++	select {
++	case <-stopped:
++	case <-time.After(3 * time.Second):
++		t.Fatal("old done channel was not closed")
++	}
++	o.mu.Lock()
++	if o.nodes[1] != replacement || replacement.service != nil || replacement.err != nil {
++		t.Error("old startup changed replacement handle")
++	}
++	o.mu.Unlock()
++	o.eventsMu.RLock()
++	if o.mailboxes[1] != mb || o.statuses[1] != status {
++		t.Error("old exit unregistered replacement")
++	}
++	o.eventsMu.RUnlock()
++}
+diff --git a/internal/machine/machine.go b/internal/machine/machine.go
+index 1b057fc50acb54e66b419bf4ef5c0af7cb02e50d..05563a658dc164c29120956288ce7d7f70bb2923 100644
+--- a/internal/machine/machine.go
++++ b/internal/machine/machine.go
+@@ -23,6 +23,8 @@ type nodeHandle struct {
+ 	cancel  context.CancelFunc
+ 	done    chan struct{}
+ 	mailbox *controlplane.NodeMailbox
++	service *service.Service
++	err     error
+ }
+ 
+ // Orchestrator manages all nodes bound to a panel machine. It:
+@@ -124,12 +126,12 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
+ 	nodeCtx, cancel := context.WithCancel(ctx)
+ 	done := make(chan struct{})
+ 	mb := controlplane.NewNodeMailbox()
+-	o.nodes[mn.ID] = &nodeHandle{cancel: cancel, done: done, mailbox: mb}
+-	o.mu.Unlock()
+-
++	handle := &nodeHandle{cancel: cancel, done: done, mailbox: mb}
++	o.nodes[mn.ID] = handle
+ 	o.eventsMu.Lock()
+ 	o.mailboxes[mn.ID] = mb
+ 	o.eventsMu.Unlock()
++	o.mu.Unlock()
+ 
+ 	nodeCfg := o.cfg.ExpandMachineNode(mn.ID, mn.Type)
+ 
+@@ -160,20 +162,28 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
+ 	// the node mailbox + status channel to the Service.
+ 	nodeID := mn.ID
+ 	registerFn := func(st chan<- controlplane.StatusChange) *controlplane.NodeMailbox {
+-		o.registerNode(nodeID, st)
++		o.registerNode(nodeID, mb, st)
+ 		return mb
+ 	}
+ 
+ 	cp := controlplane.NewMachinePanelControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)
+ 	svc := service.NewWithControlPlane(nodeCfg, cp)
++	o.mu.Lock()
++	// Discovery may remove this node while the config request is in flight.
++	// Keep this generation's handle: a cancelled service still closes done.
++	handle.service = svc
++	o.mu.Unlock()
+ 
+ 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
+ 		mn.ID, mn.Type, mn.Name))
+ 
+ 	go func() {
+ 		defer close(done)
+-		defer o.unregisterNode(mn.ID)
++		defer o.unregisterNode(mn.ID, mb)
+ 		if err := svc.Run(nodeCtx); err != nil {
++			o.mu.Lock()
++			handle.err = err
++			o.mu.Unlock()
+ 			nlog.Core().Error("machine node exited with error",
+ 				"node_id", mn.ID, "error", err)
+ 		}
+@@ -191,7 +201,10 @@ func (o *Orchestrator) stopNode(nodeID int) {
+ 	o.mu.Unlock()
+ 
+ 	o.eventsMu.Lock()
+-	delete(o.mailboxes, nodeID)
++	if o.mailboxes[nodeID] == h.mailbox {
++		delete(o.mailboxes, nodeID)
++		delete(o.statuses, nodeID)
++	}
+ 	o.eventsMu.Unlock()
+ 
+ 	nlog.Core().Info(fmt.Sprintf("machine: stopping node %d", nodeID))
+@@ -351,16 +364,20 @@ func (o *Orchestrator) onWSStatus(status panel.WSStatusChange) {
+ 	}
+ }
+ 
+-func (o *Orchestrator) registerNode(nodeID int, st chan<- controlplane.StatusChange) {
++func (o *Orchestrator) registerNode(nodeID int, mailbox *controlplane.NodeMailbox, st chan<- controlplane.StatusChange) {
+ 	o.eventsMu.Lock()
+-	o.statuses[nodeID] = st
++	if o.mailboxes[nodeID] == mailbox {
++		o.statuses[nodeID] = st
++	}
+ 	o.eventsMu.Unlock()
+ }
+ 
+-func (o *Orchestrator) unregisterNode(nodeID int) {
++func (o *Orchestrator) unregisterNode(nodeID int, mailbox *controlplane.NodeMailbox) {
+ 	o.eventsMu.Lock()
+-	delete(o.mailboxes, nodeID)
+-	delete(o.statuses, nodeID)
++	if o.mailboxes[nodeID] == mailbox {
++		delete(o.mailboxes, nodeID)
++		delete(o.statuses, nodeID)
++	}
+ 	o.eventsMu.Unlock()
+ }
+ 
+@@ -411,3 +428,28 @@ func (p *machineNodePush) SendDeviceReport(devices map[int][]string) {
+ 	data, _ := json.Marshal(payload)
+ 	p.ws.SendRaw(panel.WSEventReportDevices, data)
+ }
++
++func (p *machineNodePush) SendNodeStatus(metrics map[string]interface{}) {
++	if p.ws != nil {
++		p.ws.SendNodeStatus(p.nodeID, metrics)
++	}
++}
++
++// CoreStatuses reports each configured node, including failed initial setup.
++// A machine heartbeat is deliberately not a readiness signal.
++func (o *Orchestrator) CoreStatuses() []service.CoreStatus {
++	o.mu.Lock()
++	defer o.mu.Unlock()
++	states := make([]service.CoreStatus, 0, len(o.nodes))
++	for _, h := range o.nodes {
++		state := service.CoreStatus{State: "waiting_config"}
++		if h.service != nil {
++			state = h.service.Status()
++		}
++		if h.err != nil {
++			state = service.CoreStatus{State: "error"}
++		}
++		states = append(states, state)
++	}
++	return states
++}
+diff --git a/internal/panel/ws.go b/internal/panel/ws.go
+index 3642aa251b84184a94609f6195bab5b35d515a5e..28a17fe1c9c88412a59aa35a101e5c8eab3c662c 100644
+--- a/internal/panel/ws.go
++++ b/internal/panel/ws.go
+@@ -388,15 +388,25 @@ func (w *WSClient) handleDataEvent(msg wsMessage) {
+ 
+ 	case WSEventSyncUsers:
+ 		nlog.Core().Debug("ws sync users event received")
+-		var p syncUsersPayload
+-		if err := decodeData(msg.Data, &p); err != nil {
++		var raw map[string]interface{}
++		if err := json.Unmarshal(msg.Data, &raw); err != nil {
+ 			nlog.Core().Warn("ws: cannot decode users payload", "error", err)
+ 			return
+ 		}
+-		if len(p.Users) == 0 {
+-			nlog.Core().Warn("ws: users payload empty")
++		// An explicit [] revokes every user. Missing/null/non-array values are
++		// malformed snapshots and must never be interpreted as that command.
++		if _, ok := raw["users"].([]interface{}); !ok {
++			nlog.Core().Warn("ws: users payload missing users array")
+ 			return
+ 		}
++		var p syncUsersPayload
++		if err := decodeWeakRaw(raw, &p); err != nil {
++			nlog.Core().Warn("ws: cannot decode users payload", "error", err)
++			return
++		}
++		if p.Users == nil {
++			p.Users = []User{}
++		}
+ 		event.Users = p.Users
+ 		event.NodeID = p.NodeID
+ 
+diff --git a/internal/panel/ws_users_test.go b/internal/panel/ws_users_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b73633b09984bf36a40d2255fe91753c82d8b7e3
+--- /dev/null
++++ b/internal/panel/ws_users_test.go
+@@ -0,0 +1,52 @@
++package panel
++
++import (
++	"encoding/json"
++	"testing"
++)
++
++// Decode the actual JSON envelope before dispatch so the full snapshot's []
++// semantics cannot be hidden by constructing a WSEvent directly in tests.
++func TestWSClientHandleDataEventSyncUsers(t *testing.T) {
++	cases := []struct {
++		name       string
++		data       string
++		wantEvent  bool
++		wantUsers  int
++		wantNodeID int
++	}{
++		{"empty_machine_snapshot", `{"node_id":42,"users":[]}`, true, 0, 42},
++		{"empty_legacy_snapshot", `{"users":[]}`, true, 0, 0},
++		{"populated_snapshot", `{"node_id":42,"users":[{"id":1,"uuid":"A"}]}`, true, 1, 42},
++		{"weak_numeric_fields", `{"node_id":"42","users":[{"id":"1","uuid":"A"}]}`, true, 1, 42},
++		{"missing_users", `{"node_id":42}`, false, 0, 0},
++		{"null_users", `{"node_id":42,"users":null}`, false, 0, 0},
++		{"object_users", `{"node_id":42,"users":{}}`, false, 0, 0},
++		{"string_users", `{"node_id":42,"users":""}`, false, 0, 0},
++		{"null_payload", `null`, false, 0, 0},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			var received []WSEvent
++			ws := &WSClient{onEvent: func(event WSEvent) { received = append(received, event) }}
++			var message wsMessage
++			if err := json.Unmarshal([]byte(`{"event":"sync.users","data":`+tc.data+`}`), &message); err != nil {
++				t.Fatal(err)
++			}
++			ws.handleDataEvent(message)
++			if !tc.wantEvent {
++				if len(received) != 0 {
++					t.Fatalf("malformed snapshot emitted an event: %+v", received)
++				}
++				return
++			}
++			if len(received) != 1 {
++				t.Fatalf("expected one authoritative snapshot, got %d", len(received))
++			}
++			event := received[0]
++			if event.Type != WSEventSyncUsers || event.NodeID != tc.wantNodeID || event.Users == nil || len(event.Users) != tc.wantUsers {
++				t.Fatalf("snapshot semantics lost: %+v", event)
++			}
++		})
++	}
++}
+diff --git a/internal/service/empty_bootstrap_regression_test.go b/internal/service/empty_bootstrap_regression_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..0d12f747988ec3633c1b8d346ec51b7479315eaa
+--- /dev/null
++++ b/internal/service/empty_bootstrap_regression_test.go
+@@ -0,0 +1,64 @@
++package service
++
++import (
++	"context"
++	"testing"
++
++	"github.com/cedar2025/xboard-node/internal/controlplane"
++	"github.com/cedar2025/xboard-node/internal/model"
++)
++
++// This file deliberately uses only v1.13 APIs so it can be copied to the
++// unpatched tag to demonstrate the production failure before applying fixes.
++func TestEmptyBootstrapUserTransitions(t *testing.T) {
++	for _, transport := range []string{"ws_full", "ws_delta", "rest_reconcile", "machine_mailbox_delta"} {
++		t.Run(transport, func(t *testing.T) {
++			k := &fakeKernel{}
++			s := newTestService(k)
++			s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++			s.lastConfigHash = computeConfigHash(s.lastConfig)
++			s.updateUserState([]model.UserSpec{})
++			if transport == "machine_mailbox_delta" {
++				s.machineMailbox = controlplane.NewNodeMailbox()
++				s.markMailboxReadyAndDrain(context.Background())
++			}
++			user := model.UserSpec{ID: 1, UUID: "00000000-0000-4000-8000-000000000001"}
++			apply := func(users []model.UserSpec) {
++				switch transport {
++				case "ws_full":
++					s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncUsers, Users: users})
++				case "ws_delta", "machine_mailbox_delta":
++					action := "add"
++					if len(users) == 0 {
++						action = "remove"
++					}
++					event := controlplane.Event{Type: controlplane.EventSyncUserDelta, DeltaAction: action, DeltaUsers: []model.UserSpec{user}}
++					if transport == "machine_mailbox_delta" {
++						s.machineMailbox.Apply(event)
++						s.drainMachineMailbox(context.Background())
++					} else {
++						s.handleWSEvent(context.Background(), event)
++					}
++				case "rest_reconcile":
++					s.applyPullResult(context.Background(), pullResult{users: users, userHash: computeUserHash(users)})
++				}
++			}
++			apply([]model.UserSpec{user})
++			if !k.running || k.startCalls != 1 {
++				t.Fatalf("empty bootstrap did not start on first user: running=%v starts=%d", k.running, k.startCalls)
++			}
++			apply([]model.UserSpec{user})
++			if k.startCalls != 1 {
++				t.Fatalf("duplicate snapshot restarted kernel: %d", k.startCalls)
++			}
++			apply([]model.UserSpec{})
++			if k.running {
++				t.Fatal("last user removal did not stop kernel")
++			}
++			apply([]model.UserSpec{user})
++			if !k.running || k.startCalls != 2 {
++				t.Fatalf("second 0->1 transition failed: running=%v starts=%d", k.running, k.startCalls)
++			}
++		})
++	}
++}
+diff --git a/internal/service/lifecycle_test.go b/internal/service/lifecycle_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9645c67f535ca911194f8d024eb4491afea7365
+--- /dev/null
++++ b/internal/service/lifecycle_test.go
+@@ -0,0 +1,252 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"github.com/cedar2025/xboard-node/internal/controlplane"
++	"github.com/cedar2025/xboard-node/internal/model"
++)
++
++func TestLifecycleRetryRetainsDesiredAndIsIdempotent(t *testing.T) {
++	k := &fakeKernel{startErr: errors.New("listen tcp: address already in use")}
++	s := newTestService(k)
++	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++	users := []model.UserSpec{{ID: 1, UUID: "test-user"}}
++	s.applyUserUpdate(context.Background(), users, computeUserHash(users))
++	st := s.Status()
++	if st.Ready || st.State != "error" || st.AppliedUsers != 0 || st.Users != 1 || st.Error == "" || st.RetryAt == 0 {
++		t.Fatalf("invalid failed status: %+v", st)
++	}
++	s.applyUserUpdate(context.Background(), users, computeUserHash(users))
++	s.reconcileKernel(context.Background())
++	if k.startCalls != 1 {
++		t.Fatal("duplicate events bypassed retry backoff")
++	}
++	k.startErr = nil
++	s.retryAt = time.Now().Add(-time.Second)
++	s.reconcileKernel(context.Background())
++	st = s.Status()
++	if !st.Ready || st.State != "running" || st.AppliedUsers != 1 || st.Error != "" || st.RetryAt != 0 {
++		t.Fatalf("invalid recovered status: %+v", st)
++	}
++	s.reconcileKernel(context.Background())
++	if k.startCalls != 2 || k.reloadCalls != 0 || k.updateCalls != 0 {
++		t.Fatalf("redundant apply: starts=%d reloads=%d updates=%d", k.startCalls, k.reloadCalls, k.updateCalls)
++	}
++}
++
++func TestLifecycleUserAndConfigOrdering(t *testing.T) {
++	for _, configFirst := range []bool{true, false} {
++		t.Run(map[bool]string{true: "config_first", false: "users_first"}[configFirst], func(t *testing.T) {
++			k := &fakeKernel{}
++			s := newTestService(k)
++			cfg := controlplane.Event{Type: controlplane.EventSyncConfig, Config: &model.NodeSpec{Protocol: "vless", ServerPort: 17881}}
++			users := controlplane.Event{Type: controlplane.EventSyncUsers, Users: []model.UserSpec{{ID: 1, UUID: "test-user"}}}
++			first, second := cfg, users
++			if !configFirst {
++				first, second = users, cfg
++			}
++			s.handleWSEvent(context.Background(), first)
++			if k.running || s.Status().Ready {
++				t.Fatal("incomplete intent reported ready")
++			}
++			s.handleWSEvent(context.Background(), second)
++			if !k.running || !s.Status().Ready || k.startCalls != 1 {
++				t.Fatal("complete intent did not start")
++			}
++			s.handleWSEvent(context.Background(), cfg)
++			s.handleWSEvent(context.Background(), users)
++			if k.startCalls != 1 || k.reloadCalls != 0 || k.updateCalls != 0 {
++				t.Fatal("duplicate events reapplied kernel")
++			}
++		})
++	}
++}
++
++func TestLifecycleRestartStopsBeforeStart(t *testing.T) {
++	k := &fakeKernel{running: true, reloadErr: errors.New("reload failed")}
++	s := newTestService(k)
++	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++	s.updateUserState([]model.UserSpec{{ID: 1, UUID: "test-user"}})
++	s.recordApplied()
++	s.forceReload = true
++	s.reconcileKernel(context.Background())
++	if !k.running || k.stopCalls != 1 || k.startCalls != 1 || !s.Status().Ready {
++		t.Fatalf("unsafe fallback: stops=%d starts=%d status=%+v", k.stopCalls, k.startCalls, s.Status())
++	}
++}
++
++func TestLifecycleStaleRESTCannotOverwriteNewPush(t *testing.T) {
++	k := &fakeKernel{}
++	s := newTestService(k)
++	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++	s.updateUserState([]model.UserSpec{})
++	old := pullResult{users: []model.UserSpec{}, userHash: computeUserHash(nil), checkRevision: true, revision: s.stateRevision}
++	s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncUsers, Users: []model.UserSpec{{ID: 1, UUID: "test-user"}}})
++	s.applyPullResult(context.Background(), old)
++	if !k.running || len(s.lastUsers) != 1 || !s.wsResyncPending.Load() {
++		t.Fatal("stale REST result overwrote newer push")
++	}
++}
++
++func TestLifecycleBackoffCapsAndNewIntentCanRecover(t *testing.T) {
++	k := &fakeKernel{startErr: errors.New("start failure")}
++	s := newTestService(k)
++	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++	s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "first"}}, "")
++	for i := 0; i < 10; i++ {
++		s.retryAt = time.Now().Add(-time.Second)
++		s.reconcileKernel(context.Background())
++	}
++	if s.retryDelay != 30*time.Second {
++		t.Fatalf("uncapped retry: %v", s.retryDelay)
++	}
++	k.startErr = nil
++	s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "second"}}, "")
++	if !k.running || !s.Status().Ready || s.appliedState.Users[0].UUID != "second" {
++		t.Fatal("new valid intent did not recover")
++	}
++}
++
++func TestLifecycleRESTRefreshesMachineDeltaBaseline(t *testing.T) {
++	a := model.UserSpec{ID: 1, UUID: "A"}
++	b := model.UserSpec{ID: 2, UUID: "B"}
++	for _, seedWithA := range []bool{true, false} {
++		t.Run(map[bool]string{true: "revoke_then_add", false: "grant_then_add"}[seedWithA], func(t *testing.T) {
++			k := &fakeKernel{}
++			s := newTestService(k)
++			s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++			initial, next := []model.UserSpec{}, []model.UserSpec{a}
++			if seedWithA {
++				initial, next = next, initial
++			}
++			s.updateUserState(initial)
++			s.machineMailbox = controlplane.NewNodeMailbox()
++			s.markMailboxReadyAndDrain(context.Background())
++			s.applyPullResult(context.Background(), pullResult{users: next, userHash: computeUserHash(next), mailboxRevision: s.machineMailbox.Revision()})
++			s.machineMailbox.Apply(controlplane.Event{Type: controlplane.EventSyncUserDelta, DeltaAction: "add", DeltaUsers: []model.UserSpec{b}})
++			s.drainMachineMailbox(context.Background())
++			want := append(next, b)
++			if computeUserHash(s.lastUsers) != computeUserHash(want) {
++				t.Fatalf("REST baseline lost: users=%+v want=%+v", s.lastUsers, want)
++			}
++		})
++	}
++}
++
++func TestLifecyclePendingMachinePushWinsOverREST(t *testing.T) {
++	k := &fakeKernel{}
++	s := newTestService(k)
++	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++	s.updateUserState([]model.UserSpec{})
++	s.machineMailbox = controlplane.NewNodeMailbox()
++	s.markMailboxReadyAndDrain(context.Background())
++	old := pullResult{users: []model.UserSpec{}, userHash: computeUserHash(nil), checkRevision: true, revision: s.stateRevision, mailboxRevision: s.machineMailbox.Revision()}
++	user := model.UserSpec{ID: 1, UUID: "new"}
++	s.machineMailbox.Apply(controlplane.Event{Type: controlplane.EventSyncUserDelta, DeltaAction: "add", DeltaUsers: []model.UserSpec{user}})
++	s.applyPullResult(context.Background(), old)
++	if !s.wsResyncPending.Load() {
++		t.Fatal("undrained push was overwritten by REST")
++	}
++	s.drainMachineMailbox(context.Background())
++	if !k.running || len(s.lastUsers) != 1 {
++		t.Fatal("new push did not start kernel")
++	}
++}
++
++func TestLifecycleInvalidNewConfigIsNotReadyAndCorrectionRecovers(t *testing.T) {
++	k := &fakeKernel{}
++	s := newTestService(k)
++	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++	s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "user"}}, "")
++	s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncConfig, Config: &model.NodeSpec{Protocol: "vless", TLS: 2, ServerPort: 17881}})
++	if k.running || s.Status().Ready || s.Status().State != "error" {
++		t.Fatal("invalid desired config still reported ready")
++	}
++	s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncConfig, Config: &model.NodeSpec{Protocol: "vless", ServerPort: 17881}})
++	if !k.running || !s.Status().Ready {
++		t.Fatal("valid correction did not recover")
++	}
++}
++
++type bootstrapOnlySource struct {
++	controlplane.Source
++	bootstrap controlplane.Bootstrap
++}
++
++func (f bootstrapOnlySource) Initial(context.Context, func() map[string]interface{}, chan<- controlplane.Event, chan<- controlplane.StatusChange) (controlplane.Bootstrap, error) {
++	return f.bootstrap, nil
++}
++
++type bootstrapPush struct{}
++
++func (bootstrapPush) Run(ctx context.Context)           { <-ctx.Done() }
++func (bootstrapPush) IsConnected() bool                 { return true }
++func (bootstrapPush) SendDeviceReport(map[int][]string) {}
++
++func TestLifecycleInitialStartFailureKeepsRecoverableService(t *testing.T) {
++	k := &fakeKernel{startErr: errors.New("listen: address already in use")}
++	s := newTestService(k)
++	s.source = bootstrapOnlySource{bootstrap: controlplane.Bootstrap{
++		Config: &model.NodeSpec{Protocol: "vless", ServerPort: 17881},
++		Users:  []model.UserSpec{{ID: 1, UUID: "A"}},
++	}}
++	if err := s.initialSetup(context.Background()); err != nil {
++		t.Fatalf("recoverable start failure terminated service: %v", err)
++	}
++	if s.Status().State != "error" || s.retryAt.IsZero() {
++		t.Fatal("missing retry state")
++	}
++	k.startErr = nil
++	s.retryAt = time.Now().Add(-time.Second)
++	s.reconcileKernel(context.Background())
++	if !s.Status().Ready || k.startCalls != 2 {
++		t.Fatal("initial failure did not recover without new event")
++	}
++}
++
++func TestLifecycleBootstrapUsersWaitForConfig(t *testing.T) {
++	k := &fakeKernel{}
++	s := newTestService(k)
++	s.source = bootstrapOnlySource{bootstrap: controlplane.Bootstrap{
++		Users: []model.UserSpec{{ID: 1, UUID: "A"}}, Push: bootstrapPush{},
++	}}
++	if err := s.initialSetup(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	if s.Status().State != "waiting_config" || len(s.lastUsers) != 1 || k.running {
++		t.Fatal("bootstrap users lost before config")
++	}
++	s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncConfig, Config: &model.NodeSpec{Protocol: "vless", ServerPort: 17881}})
++	if !s.Status().Ready || k.startCalls != 1 {
++		t.Fatal("later config did not activate retained users")
++	}
++}
++
++func TestLifecycleStartMustActuallyRun(t *testing.T) {
++	k := &fakeKernel{startWithoutRunning: true}
++	s := newTestService(k)
++	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++	s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "A"}}, "")
++	if st := s.Status(); st.Ready || st.State != "error" || st.AppliedUsers != 0 || st.RetryAt == 0 {
++		t.Fatalf("false successful Start reported ready: %+v", st)
++	}
++}
++
++func TestLifecycleUnexpectedKernelStopInvalidatesReadinessAndRecovers(t *testing.T) {
++	k := &fakeKernel{}
++	s := newTestService(k)
++	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++	s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "A"}}, "")
++	k.running = false
++	if st := s.Status(); st.Ready || st.State != "error" || st.AppliedUsers != 0 {
++		t.Fatalf("stopped kernel reported ready: %+v", st)
++	}
++	s.reconcileKernel(context.Background())
++	if !s.Status().Ready || k.startCalls != 2 {
++		t.Fatal("unexpected stop did not recover")
++	}
++}
+diff --git a/internal/service/reconciliation_http_test.go b/internal/service/reconciliation_http_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2f2b893d35d69b24aa57769e252b5fee7efa6592
+--- /dev/null
++++ b/internal/service/reconciliation_http_test.go
+@@ -0,0 +1,196 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/cedar2025/xboard-node/internal/config"
++	"github.com/cedar2025/xboard-node/internal/controlplane"
++	"github.com/cedar2025/xboard-node/internal/model"
++	"github.com/cedar2025/xboard-node/internal/panel"
++)
++
++type etagFixture struct {
++	mu              sync.Mutex
++	users           []panel.User
++	etag            string
++	lastIfNoneMatch string
++	entered         chan struct{}
++	release         chan struct{}
++}
++
++func (f *etagFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	if strings.HasSuffix(r.URL.Path, "/config") {
++		w.Header().Set("ETag", "config-v1")
++		if r.Header.Get("If-None-Match") == "config-v1" {
++			w.WriteHeader(http.StatusNotModified)
++			return
++		}
++		_, _ = w.Write([]byte(`{"protocol":"vless","server_port":17881}`))
++		return
++	}
++	if !strings.HasSuffix(r.URL.Path, "/user") {
++		http.NotFound(w, r)
++		return
++	}
++	f.mu.Lock()
++	users, etag := append([]panel.User{}, f.users...), f.etag
++	f.lastIfNoneMatch = r.Header.Get("If-None-Match")
++	entered, release := f.entered, f.release
++	f.entered, f.release = nil, nil
++	f.mu.Unlock()
++	if entered != nil {
++		close(entered)
++		<-release
++	}
++	w.Header().Set("ETag", etag)
++	if r.Header.Get("If-None-Match") == etag {
++		w.WriteHeader(http.StatusNotModified)
++		return
++	}
++	_ = json.NewEncoder(w).Encode(panel.UsersResponse{Users: users})
++}
++
++func (f *etagFixture) set(users []panel.User, etag string) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.users, f.etag = users, etag
++}
++
++func (f *etagFixture) block(t *testing.T) (<-chan struct{}, func()) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	f.entered, f.release = make(chan struct{}), make(chan struct{})
++	entered, release := f.entered, f.release
++	var once sync.Once
++	unblock := func() { once.Do(func() { close(release) }) }
++	t.Cleanup(unblock)
++	return entered, unblock
++}
++
++func etagService(t *testing.T, machine bool, f *etagFixture) (*Service, *fakeKernel) {
++	t.Helper()
++	ts := httptest.NewServer(f)
++	t.Cleanup(ts.Close)
++	k := &fakeKernel{}
++	s := newTestService(k)
++	pc := config.PanelConfig{URL: ts.URL, NodeID: 1}
++	if machine {
++		pc.MachineID = 1
++		s.source = controlplane.NewMachinePanelControlPlane(panel.NewClient(pc), s.cfg.Kernel, nil, nil)
++	} else {
++		s.source = controlplane.NewPanelControlPlane(pc, config.WSConfig{}, s.cfg.Kernel)
++	}
++	s.pullResults = make(chan pullResult, 1)
++	snapshot, err := s.source.Poll(context.Background())
++	if err != nil {
++		t.Fatal(err)
++	}
++	s.lastConfig, s.lastConfigHash = snapshot.Config, computeConfigHash(snapshot.Config)
++	s.updateUserState(snapshot.Users)
++	s.reconcileKernel(context.Background())
++	return s, k
++}
++
++func awaitPoll(t *testing.T, s *Service) pullResult {
++	t.Helper()
++	var result pullResult
++	select {
++	case result = <-s.pullResults:
++	case <-time.After(3 * time.Second):
++		t.Fatal("REST poll did not return")
++	}
++	deadline := time.Now().Add(time.Second)
++	for s.pullActive.Load() {
++		if time.Now().After(deadline) {
++			t.Fatal("REST poll did not finish")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	return result
++}
++
++func TestLifecycleDiscardedRESTSnapshotClearsETags(t *testing.T) {
++	for _, machine := range []bool{false, true} {
++		t.Run(map[bool]string{false: "panel", true: "machine"}[machine], func(t *testing.T) {
++			f := &etagFixture{users: []panel.User{}, etag: "empty"}
++			s, k := etagService(t, machine, f)
++			f.set([]panel.User{{ID: 1, UUID: "A"}}, "A")
++			entered, release := f.block(t)
++			s.pullViaAPIAsync(context.Background())
++			select {
++			case <-entered:
++			case <-time.After(3 * time.Second):
++				t.Fatal("GET users not reached")
++			}
++			// Even a repeated config event supersedes an in-flight snapshot.
++			s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncConfig, Config: s.lastConfig})
++			release()
++			s.applyPullResult(context.Background(), awaitPoll(t, s))
++			if len(s.lastUsers) != 0 || !s.wsResyncPending.Load() {
++				t.Fatal("stale result was not deferred")
++			}
++			s.pullViaAPIAsync(context.Background())
++			s.applyPullResult(context.Background(), awaitPoll(t, s))
++			f.mu.Lock()
++			conditional := f.lastIfNoneMatch
++			f.mu.Unlock()
++			if conditional != "" || !k.running || !s.Status().Ready || len(s.lastUsers) != 1 {
++				t.Fatalf("forced full resync missing: If-None-Match=%q state=%+v", conditional, s.Status())
++			}
++			// Normal conditional polling resumes, and 304 preserves applied users.
++			s.pullViaAPIAsync(context.Background())
++			unchanged := awaitPoll(t, s)
++			if unchanged.users != nil {
++				t.Fatal("expected actual 304 user response")
++			}
++			s.applyPullResult(context.Background(), unchanged)
++			if !s.Status().Ready || k.startCalls != 1 {
++				t.Fatal("304 changed live lifecycle")
++			}
++		})
++	}
++}
++
++func TestLifecycleReconnectRestoresPreviouslyCachedUsers(t *testing.T) {
++	for _, connected := range []bool{false, true} {
++		t.Run(map[bool]string{false: "disconnect", true: "reconnect"}[connected], func(t *testing.T) {
++			f := &etagFixture{users: []panel.User{{ID: 1, UUID: "A"}}, etag: "A"}
++			s, k := etagService(t, true, f)
++			s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncUsers, Users: []model.UserSpec{}})
++			if k.running {
++				t.Fatal("revoked last user kept serving")
++			}
++			// The panel re-authorizes A while offline. Its ETag is again A, but
++			// desired state is empty. An old conditional poll is already in flight.
++			entered, release := f.block(t)
++			s.pullViaAPIAsync(context.Background())
++			select {
++			case <-entered:
++			case <-time.After(3 * time.Second):
++				t.Fatal("GET users not reached")
++			}
++			s.handleWSStatus(context.Background(), controlplane.StatusChange{Connected: connected})
++			release()
++			old := awaitPoll(t, s)
++			if old.users != nil {
++				t.Fatal("expected cached ETag to return 304")
++			}
++			s.applyPullResult(context.Background(), old)
++			if !s.wsResyncPending.Load() {
++				t.Fatal("old 304 consumed reconnect resync request")
++			}
++			s.pullViaAPIAsync(context.Background())
++			s.applyPullResult(context.Background(), awaitPoll(t, s))
++			if !k.running || !s.Status().Ready || k.startCalls != 2 || len(s.lastUsers) != 1 {
++				t.Fatalf("re-authorized A not restored: %+v", s.Status())
++			}
++		})
++	}
++}
+diff --git a/internal/service/service.go b/internal/service/service.go
+index 890940db466f0716cb2cbbd515dacfac248a97e1..de1774c47364c5998a11a04ac41abfa113ae3c1d 100644
+--- a/internal/service/service.go
++++ b/internal/service/service.go
+@@ -41,6 +41,14 @@ type Service struct {
+ 	lastConfig *model.NodeSpec
+ 	lastUsers  []model.UserSpec
+ 
++	// Lifecycle mutations run only on the service loop. metricsMu protects the
++	// published snapshot read by HTTP/WS reporting goroutines.
++	coreStatus    CoreStatus
++	retryAt       time.Time
++	retryDelay    time.Duration
++	forceReload   bool
++	stateRevision uint64
++
+ 	// nodeLog is the logger with node context for this service instance.
+ 	nodeLog *nlog.NodeLog
+ 
+@@ -80,11 +88,14 @@ type Service struct {
+ 
+ // pullResult carries the outcome of an async pullViaAPI back to the main goroutine.
+ type pullResult struct {
+-	config      *model.NodeSpec
+-	users       []model.UserSpec
+-	configHash  string
+-	userHash    string
+-	certChanged bool
++	config          *model.NodeSpec
++	users           []model.UserSpec
++	configHash      string
++	userHash        string
++	certChanged     bool
++	revision        uint64
++	checkRevision   bool
++	mailboxRevision uint64
+ }
+ 
+ // apiBackoff implements simple exponential backoff for API failures.
+@@ -179,9 +190,11 @@ func (s *Service) Run(ctx context.Context) error {
+ 	if err := s.initialSetup(ctx); err != nil {
+ 		return fmt.Errorf("initial setup: %w", err)
+ 	}
+-	defer s.kernel.Stop()
++	defer s.stopKernel("stopped")
+ 
+ 	// Set up tickers
++	retryTicker := time.NewTicker(time.Second)
++	defer retryTicker.Stop()
+ 	trackTicker := time.NewTicker(time.Duration(s.cfg.Node.TrackInterval) * time.Second)
+ 	pushInterval := time.Duration(math.Max(float64(s.pushInterval), 5)) * time.Second
+ 	pullInterval := time.Duration(s.pullInterval) * time.Second
+@@ -205,9 +218,16 @@ func (s *Service) Run(ctx context.Context) error {
+ 	for {
+ 		select {
+ 		case <-ctx.Done():
++			s.stopKernel("stopped")
+ 			s.pushReportSync()
+ 			return nil
+ 
++		case <-retryTicker.C:
++			s.reconcileKernel(ctx)
++			if s.wsResyncPending.Load() {
++				s.pullViaAPIAsync(ctx)
++			}
++
+ 		case <-trackTicker.C:
+ 			s.trackAndEnforce(ctx)
+ 
+@@ -280,18 +300,17 @@ func (s *Service) initialSetup(ctx context.Context) error {
+ 		s.machineMailboxCh = s.machineMailbox.NotifyCh()
+ 	}
+ 	if bootstrap.Config == nil {
++		s.updateUserState(bootstrap.Users)
++		s.setCoreStatus("waiting_config", "")
+ 		if bootstrap.Push != nil {
+ 			// In machine mode a shared WS client may be available before the first
+ 			// per-node snapshot arrives. In that case we wait for subsequent WS/REST
+ 			// updates instead of failing startup.
++			s.markMailboxReadyAndDrain(ctx)
+ 			return nil
+ 		}
+ 		return fmt.Errorf("initial config is nil")
+ 	}
+-	if err := validateNodeRuntime(s.cfg, s.kernel.Protocols(), bootstrap.Config, s.cert.TLSCert()); err != nil {
+-		return err
+-	}
+-
+ 	s.metricsMu.Lock()
+ 	s.lastConfig = bootstrap.Config
+ 	s.metricsMu.Unlock()
+@@ -306,14 +325,12 @@ func (s *Service) initialSetup(ctx context.Context) error {
+ 
+ 	if len(bootstrap.Users) == 0 {
+ 		nlog.Core().Warn("no users, kernel will not start until users are available")
++		s.setCoreStatus("waiting_users", "")
+ 		s.markMailboxReadyAndDrain(ctx)
+ 		return nil
+ 	}
+ 
+-	s.applyRemoteOverrides(ctx, bootstrap.Config)
+-	if !s.startKernel(bootstrap.Config, bootstrap.Users) {
+-		return fmt.Errorf("start kernel")
+-	}
++	s.reconcileKernel(ctx)
+ 	s.markMailboxReadyAndDrain(ctx)
+ 	return nil
+ }
+@@ -419,6 +436,7 @@ func (s *Service) drainMachineMailbox(ctx context.Context) {
+ }
+ 
+ func (s *Service) requestWSResync(ctx context.Context, reason string) {
++	s.stateRevision++
+ 	if !s.wsResyncPending.CompareAndSwap(false, true) {
+ 		return
+ 	}
+@@ -442,6 +460,11 @@ func (s *Service) wsMetrics() map[string]interface{} {
+ // - On disconnect: record timestamp, immediately REST poll.
+ // - On reconnect: clear disconnect timestamp, REST poll to catch missed events.
+ func (s *Service) handleWSStatus(ctx context.Context, status controlplane.StatusChange) {
++	s.stateRevision++
++	// REST ETags describe the last REST response, which can differ from the
++	// desired state after push updates. Reconnect must obtain a full snapshot
++	// even when the panel has returned to a previously cached ETag.
++	s.wsResyncPending.Store(true)
+ 	if status.NeedsResync {
+ 		s.requestWSResync(ctx, "drop_detected")
+ 	}
+@@ -534,6 +557,9 @@ func (s *Service) wsDiscovery(ctx context.Context) {
+ 
+ // handleWSEvent processes data events received via WebSocket
+ func (s *Service) handleWSEvent(ctx context.Context, event controlplane.Event) {
++	if event.Type == controlplane.EventSyncConfig || event.Type == controlplane.EventSyncUsers || event.Type == controlplane.EventSyncUserDelta {
++		s.stateRevision++
++	}
+ 	switch event.Type {
+ 	case controlplane.EventSyncConfig:
+ 		if event.Config == nil {
+@@ -541,22 +567,21 @@ func (s *Service) handleWSEvent(ctx context.Context, event controlplane.Event) {
+ 		}
+ 		newConfigHash := computeConfigHash(event.Config)
+ 		if newConfigHash == s.lastConfigHash {
+-			return
+-		}
+-		if err := validateNodeRuntime(s.cfg, s.kernel.Protocols(), event.Config, s.cert.TLSCert()); err != nil {
+-			nlog.Core().Warn("ws config validation failed, ignoring update", "error", err)
++			s.reconcileKernel(ctx)
+ 			return
+ 		}
+ 		// Initialize nodeLog on first config
+ 		if s.nodeLog == nil {
+ 			s.nodeLog = nlog.ForNode(event.Config.Protocol, event.Config.ServerPort)
+ 		}
+-		s.nodeLog.Info(fmt.Sprintf("config updated, %d users", len(event.Users)))
++		s.nodeLog.Debug("config received")
+ 		s.metricsMu.Lock()
+ 		s.lastConfig = event.Config
++		s.coreStatus.Ready = false
++		s.coreStatus.State = "starting"
+ 		s.metricsMu.Unlock()
+ 		s.lastConfigHash = newConfigHash
+-		s.applyRemoteOverrides(ctx, event.Config)
++		s.resetRetry()
+ 		s.applyChanges(ctx, true, false)
+ 
+ 	case controlplane.EventSyncUsers:
+@@ -565,11 +590,9 @@ func (s *Service) handleWSEvent(ctx context.Context, event controlplane.Event) {
+ 		}
+ 		newHash := computeUserHash(event.Users)
+ 		if newHash == s.lastUserHash {
++			s.reconcileKernel(ctx)
+ 			return
+ 		}
+-		if s.nodeLog != nil {
+-			s.nodeLog.Info(fmt.Sprintf("users updated, %d users", len(event.Users)))
+-		}
+ 		s.applyUserUpdate(ctx, event.Users, newHash)
+ 
+ 	case controlplane.EventSyncUserDelta:
+@@ -609,10 +632,21 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
+ 	}
+ 
+ 	currentConfigHash := s.lastConfigHash
++	currentRevision := s.stateRevision
++	var mailboxRevision uint64
++	if s.machineMailbox != nil {
++		mailboxRevision = s.machineMailbox.Revision()
++	}
+ 	certChanged := s.cert.CertRenewed()
++	forceSnapshot := s.wsResyncPending.Load()
+ 
+ 	go func() {
+ 		defer s.pullActive.Store(false)
++		if forceSnapshot {
++			if source, ok := s.source.(interface{ ResetSnapshot() }); ok {
++				source.ResetSnapshot()
++			}
++		}
+ 		snapshot, err := s.source.Poll(ctx)
+ 		if err != nil {
+ 			nlog.Core().Error("poll control plane failed", "error", err)
+@@ -621,7 +655,7 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
+ 		}
+ 		s.pullBackoff.onSuccess()
+ 
+-		result := pullResult{certChanged: certChanged}
++		result := pullResult{certChanged: certChanged, revision: currentRevision, checkRevision: true, mailboxRevision: mailboxRevision}
+ 		if snapshot.Config != nil {
+ 			result.config = snapshot.Config
+ 			result.configHash = computeConfigHash(snapshot.Config)
+@@ -643,6 +677,18 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
+ 
+ // applyPullResult processes the result of an async pullViaAPI on the main goroutine.
+ func (s *Service) applyPullResult(ctx context.Context, result pullResult) {
++	if result.checkRevision && result.revision != s.stateRevision {
++		// A newer push won while REST was in flight. Do not resurrect stale
++		// users/config; the loop schedules a fresh authoritative snapshot.
++		s.wsResyncPending.Store(true)
++		return
++	}
++	if s.machineMailbox != nil {
++		if !s.machineMailbox.RefreshBaseline(result.users, result.config, result.mailboxRevision) {
++			s.wsResyncPending.Store(true)
++			return
++		}
++	}
+ 	s.wsResyncPending.Store(false)
+ 	configChanged := false
+ 
+@@ -652,39 +698,29 @@ func (s *Service) applyPullResult(ctx context.Context, result pullResult) {
+ 	}
+ 
+ 	if result.config != nil {
+-		if err := validateNodeRuntime(s.cfg, s.kernel.Protocols(), result.config, s.cert.TLSCert()); err != nil {
+-			nlog.Core().Warn("runtime config validation failed", "error", err)
+-			result.config = nil
+-		} else {
+-			configChanged = true
+-			// Initialize or update node logger
+-			if s.nodeLog == nil {
+-				s.nodeLog = nlog.ForNode(result.config.Protocol, result.config.ServerPort)
+-			}
+-			s.nodeLog.Info(fmt.Sprintf("config updated, %d users", len(s.lastUsers)))
+-			s.metricsMu.Lock()
+-			s.lastConfig = result.config
+-			s.metricsMu.Unlock()
+-			s.lastConfigHash = result.configHash
+-			if s.applyRemoteOverrides(ctx, result.config) {
+-				configChanged = true
+-			}
++		configChanged = true
++		if s.nodeLog == nil {
++			s.nodeLog = nlog.ForNode(result.config.Protocol, result.config.ServerPort)
+ 		}
++		s.nodeLog.Debug("config received")
++		s.metricsMu.Lock()
++		s.lastConfig = result.config
++		s.coreStatus.Ready = false
++		s.coreStatus.State = "starting"
++		s.metricsMu.Unlock()
++		s.lastConfigHash = result.configHash
+ 	}
+ 
+-	if result.users != nil {
+-		usersChanged := result.userHash != s.lastUserHash
+-
+-		if usersChanged && !configChanged {
+-			s.applyUserUpdate(ctx, result.users, result.userHash)
+-		} else if usersChanged {
+-			s.updateUserState(result.users)
+-		}
++	if result.users != nil && result.userHash != s.lastUserHash {
++		s.updateUserState(result.users)
++		s.resetRetry()
+ 	}
+-
+ 	if configChanged {
+-		s.applyChanges(ctx, true, false)
++		s.forceReload = true
++		s.resetRetry()
+ 	}
++	// Unchanged snapshots must still recover a failed or stopped kernel.
++	s.reconcileKernel(ctx)
+ }
+ 
+ // ─── User state helpers ─────────────────────────────────────────────────────
+@@ -710,7 +746,9 @@ func (s *Service) prepareUserState(users []model.UserSpec) (prevUsers []model.Us
+ 	s.speedTracker.UpdateBuckets()
+ 
+ 	s.metricsMu.Lock()
+-	s.lastUsers = append([]model.UserSpec(nil), users...)
++	s.lastUsers = append([]model.UserSpec{}, users...)
++	s.coreStatus.Ready = false
++	s.coreStatus.State = "starting"
+ 	s.metricsMu.Unlock()
+ 	s.lastUserHash = computeUserHash(users)
+ 	return prevUsers, prevHash
+@@ -723,137 +761,201 @@ func (s *Service) restoreUserState(users []model.UserSpec, hash string) {
+ 	s.limiter.UpdateUsers(users)
+ 	s.speedTracker.UpdateBuckets()
+ 	s.metricsMu.Lock()
+-	s.lastUsers = append([]model.UserSpec(nil), users...)
++	s.lastUsers = append([]model.UserSpec{}, users...)
++	s.coreStatus.Ready = false
++	s.coreStatus.State = "starting"
+ 	s.metricsMu.Unlock()
+ 	s.lastUserHash = hash
+ }
+ 
+-// startKernel starts (or restarts) the kernel with the given config/users and
+-// records the successfully applied state. Returns false on error.
++// CoreStatus distinguishes received intent from the state applied to a kernel.
++// users is the desired user count; applied_users is zero while stopped/failed.
++type CoreStatus struct {
++	State        string `json:"state"`
++	Ready        bool   `json:"ready"`
++	Users        int    `json:"users"`
++	AppliedUsers int    `json:"applied_users"`
++	Error        string `json:"error,omitempty"`
++	RetryAt      int64  `json:"retry_at,omitempty"`
++}
++
++// Status is safe to call from health endpoints and transport goroutines.
++func (s *Service) Status() CoreStatus {
++	s.metricsMu.RLock()
++	status := s.coreStatus
++	status.Users = len(s.lastUsers)
++	s.metricsMu.RUnlock()
++	if status.State == "" {
++		status.State = "waiting_config"
++	}
++	if status.Ready && !s.kernel.IsRunning() {
++		status.State = "error"
++		status.Ready = false
++		status.AppliedUsers = 0
++		status.Error = "kernel is not running"
++	}
++	return status
++}
++
++func (s *Service) setCoreStatus(state, message string) {
++	s.metricsMu.Lock()
++	s.coreStatus = CoreStatus{State: state, Ready: state == "running", Users: len(s.lastUsers), Error: message}
++	if state == "running" {
++		s.coreStatus.AppliedUsers = len(s.appliedState.Users)
++	}
++	if !s.retryAt.IsZero() {
++		s.coreStatus.RetryAt = s.retryAt.Unix()
++	}
++	s.metricsMu.Unlock()
++}
++
++func (s *Service) resetRetry() {
++	s.retryAt = time.Time{}
++	s.retryDelay = 0
++}
++
++func (s *Service) failKernel(err error) {
++	// A partially applied user/config update is not safe to keep serving.
++	// Stop also prevents the next retry from binding the same listener twice.
++	s.kernel.Stop()
++	s.appliedState.Config = nil
++	s.appliedState.Users = nil
++	if s.retryDelay == 0 {
++		s.retryDelay = time.Second
++	} else if s.retryDelay < 30*time.Second {
++		s.retryDelay *= 2
++		if s.retryDelay > 30*time.Second {
++			s.retryDelay = 30 * time.Second
++		}
++	}
++	s.retryAt = time.Now().Add(s.retryDelay)
++	s.setCoreStatus("error", err.Error())
++	nlog.Core().Error("kernel apply failed; retry scheduled", "error", err, "retry_in", s.retryDelay)
++}
++
++func (s *Service) stopKernel(state string) {
++	if s.kernel.IsRunning() {
++		s.kernel.Stop()
++	}
++	s.appliedState.Config = nil
++	s.appliedState.Users = nil
++	s.resetRetry()
++	s.setCoreStatus(state, "")
++}
++
++func (s *Service) recordApplied() {
++	s.appliedState.Config = s.lastConfig
++	s.appliedState.Users = append([]model.UserSpec(nil), s.lastUsers...)
++	s.forceReload = false
++	s.resetRetry()
++	s.setCoreStatus("running", "")
++}
++
++// startKernel is only called on the serialized service loop. Stop an existing
++// instance before a restart fallback so Start never competes for its port.
+ func (s *Service) startKernel(nc *model.NodeSpec, users []model.UserSpec) bool {
++	if s.kernel.IsRunning() {
++		s.kernel.Stop()
++	}
++	s.appliedState.Config = nil
++	s.appliedState.Users = nil
++	s.setCoreStatus("starting", "")
+ 	if err := s.kernel.Start(nc, users, s.cert.TLSCert()); err != nil {
+-		nlog.Core().Error("failed to start kernel", "error", err)
++		s.failKernel(fmt.Errorf("start kernel: %w", err))
+ 		return false
+ 	}
+-
+-	s.appliedState.Config = nc
+-	s.appliedState.Users = users
+-
+-	// Initialize node logger on first successful start
++	if !s.kernel.IsRunning() {
++		s.failKernel(fmt.Errorf("kernel Start returned without a running kernel"))
++		return false
++	}
++	s.recordApplied()
+ 	if s.nodeLog == nil {
+ 		s.nodeLog = nlog.ForNode(nc.Protocol, nc.ServerPort)
+ 	}
+ 	s.speedTracker.SetLogCallback(func(msg string) {
+-		fullMsg := fmt.Sprintf("speedtracker: %s active_limiters=%d", msg, s.speedTracker.LimitedUserCount())
+-		s.nodeLog.Info(fullMsg)
++		s.nodeLog.Info(fmt.Sprintf("speedtracker: %s active_limiters=%d", msg, s.speedTracker.LimitedUserCount()))
+ 	})
+ 	s.nodeLog.Info(fmt.Sprintf("started, %d users", len(users)))
+ 	return true
+ }
+ 
+-// ensureRunning starts the kernel if it is not running and there are users +
+-// config available. Returns true if the kernel is running afterwards.
+-func (s *Service) ensureRunning() bool {
+-	if s.kernel.IsRunning() {
+-		return true
++// reconcileKernel is shared by all user/config transports and the retry ticker.
++// lastConfig/lastUsers are desired state and survive failed application.
++func (s *Service) reconcileKernel(ctx context.Context) {
++	if ctx.Err() != nil {
++		return
+ 	}
+-	if len(s.lastUsers) > 0 && s.lastConfig != nil {
+-		return s.startKernel(s.lastConfig, s.lastUsers)
++	if s.lastConfig == nil {
++		s.stopKernel("waiting_config")
++		return
+ 	}
+-	return false
+-}
+-
+-// ─── User update entry points ───────────────────────────────────────────────
+-
+-// applyUserUpdate replaces the full user set and hot-swaps the kernel.
+-// Called from WS sync.users and REST polling.
+-func (s *Service) applyUserUpdate(ctx context.Context, users []model.UserSpec, newHash string) {
+-	if !s.ensureRunning() {
++	if len(s.lastUsers) == 0 {
++		s.stopKernel("waiting_users")
+ 		return
+ 	}
+-
+-	prevUsers, prevHash := s.prepareUserState(users)
+-	added, removed, err := s.kernel.UpdateUsers(users)
++	if !s.retryAt.IsZero() && time.Now().Before(s.retryAt) {
++		return
++	}
++	if err := validateNodeRuntime(s.cfg, s.kernel.Protocols(), s.lastConfig, s.cert.TLSCert()); err != nil {
++		s.failKernel(fmt.Errorf("runtime config: %w", err))
++		return
++	}
++	if !s.kernel.IsRunning() {
++		s.applyRemoteOverrides(ctx, s.lastConfig)
++		s.startKernel(s.lastConfig, s.lastUsers)
++		return
++	}
++	configChanged := s.forceReload || computeConfigHash(s.appliedState.Config) != computeConfigHash(s.lastConfig)
++	usersChanged := computeUserHash(s.appliedState.Users) != s.lastUserHash
++	if !configChanged && !usersChanged {
++		return
++	}
++	s.setCoreStatus("starting", "")
++	var err error
++	if configChanged {
++		s.applyRemoteOverrides(ctx, s.lastConfig)
++		err = s.kernel.Reload(s.lastConfig, s.lastUsers, s.cert.TLSCert())
++	} else {
++		_, _, err = s.kernel.UpdateUsers(s.lastUsers)
++	}
+ 	if err != nil {
+-		nlog.Core().Warn(fmt.Sprintf("UpdateUsers failed, restarting kernel: %v", err))
+-		if !s.startKernel(s.lastConfig, users) {
+-			s.restoreUserState(prevUsers, prevHash)
+-		}
++		nlog.Core().Warn("kernel update failed, restarting", "error", err)
++		s.startKernel(s.lastConfig, s.lastUsers)
+ 		return
+ 	}
+-	if newHash != "" {
+-		s.lastUserHash = newHash
++	if !s.kernel.IsRunning() {
++		s.failKernel(fmt.Errorf("kernel update returned without a running kernel"))
++		return
+ 	}
+-	if s.nodeLog != nil && (added > 0 || removed > 0) {
+-		s.nodeLog.Info(fmt.Sprintf("users updated: +%d -%d", added, removed))
++	s.recordApplied()
++	if s.nodeLog != nil {
++		s.nodeLog.Info(fmt.Sprintf("kernel applied, %d users", len(s.lastUsers)))
+ 	}
+ }
+ 
+-// applyUserDelta applies an incremental user change (add or remove) directly
+-// via the kernel's atomic user API. Kernel updates run before updateUserState.
++// applyUserUpdate stores the complete desired snapshot before considering
++// whether the kernel can start. This is essential for the empty bootstrap.
++func (s *Service) applyUserUpdate(ctx context.Context, users []model.UserSpec, newHash string) {
++	if computeUserHash(users) != s.lastUserHash {
++		s.updateUserState(users)
++		s.resetRetry()
++	}
++	s.reconcileKernel(ctx)
++}
++
++// Incremental changes use the same atomic full-user kernel operation after
++// merging intent. This also handles UUID rotation and replay idempotently.
+ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers []model.UserSpec) {
++	if len(deltaUsers) == 0 {
++		return
++	}
+ 	switch action {
+ 	case "add":
+-		// Defensive check for empty or nil deltaUsers
+-		if deltaUsers == nil || len(deltaUsers) == 0 {
+-			return
+-		}
+-		merged := mergeUsers(s.lastUsers, deltaUsers)
+-
+-		if !s.ensureRunning() {
+-			return
+-		}
+-
+-		for _, delta := range deltaUsers {
+-			for _, old := range s.lastUsers {
+-				if old.ID == delta.ID && old.UUID != delta.UUID {
+-					s.kernel.RemoveUsers([]model.UserSpec{old})
+-					break
+-				}
+-			}
+-		}
+-
+-		prevUsers, prevHash := s.prepareUserState(merged)
+-		added, err := s.kernel.AddUsers(deltaUsers)
+-		if err != nil {
+-			nlog.Core().Warn(fmt.Sprintf("AddUsers failed: %v, falling back to UpdateUsers", err))
+-			if _, _, err := s.kernel.UpdateUsers(merged); err != nil {
+-				nlog.Core().Error(fmt.Sprintf("UpdateUsers fallback failed: %v", err))
+-				s.restoreUserState(prevUsers, prevHash)
+-				return
+-			}
+-		}
+-		if s.nodeLog != nil && added > 0 {
+-			s.nodeLog.Info(fmt.Sprintf("users added: +%d", added))
+-		}
+-
++		s.applyUserUpdate(ctx, mergeUsers(s.lastUsers, deltaUsers), "")
+ 	case "remove":
+-		// Defensive check for empty or nil deltaUsers
+-		if deltaUsers == nil || len(deltaUsers) == 0 {
+-			return
+-		}
+-		filtered := subtractUsers(s.lastUsers, deltaUsers)
+-
+-		if !s.kernel.IsRunning() {
+-			return
+-		}
+-
+-		prevUsers, prevHash := s.prepareUserState(filtered)
+-		removed, err := s.kernel.RemoveUsers(deltaUsers)
+-		if err != nil {
+-			nlog.Core().Warn(fmt.Sprintf("RemoveUsers failed: %v, falling back to UpdateUsers", err))
+-			if _, _, err := s.kernel.UpdateUsers(filtered); err != nil {
+-				nlog.Core().Error(fmt.Sprintf("UpdateUsers fallback failed: %v", err))
+-				s.restoreUserState(prevUsers, prevHash)
+-				return
+-			}
+-		}
+-		if s.nodeLog != nil && removed > 0 {
+-			s.nodeLog.Info(fmt.Sprintf("users removed: -%d", removed))
+-		}
+-
++		s.applyUserUpdate(ctx, subtractUsers(s.lastUsers, deltaUsers), "")
+ 	default:
+-		nlog.Core().Warn(fmt.Sprintf("unknown user delta action: %s", action))
++		nlog.Core().Warn("unknown user delta action", "action", action)
+ 	}
+ }
+ 
+@@ -903,37 +1005,12 @@ func subtractUsers(base, delta []model.UserSpec) []model.UserSpec {
+ 	return out
+ }
+ 
+-// applyChanges applies config changes to the kernel. User-only changes are
+-// handled by applyUserUpdate/applyUserDelta directly via the atomic user API.
++// applyChanges routes configuration changes through the same lifecycle.
+ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged bool) {
+-	if !configChanged {
+-		return
+-	}
+-
+-	if s.lastConfig == nil || len(s.lastUsers) == 0 {
+-		if len(s.lastUsers) == 0 {
+-			s.kernel.Stop()
+-			s.appliedState.Users = nil
+-		}
+-		return
+-	}
+-
+-	// If config changed, delegate to kernel.Reload. The kernel implementation
+-	// decides whether to hot-swap users, reconstruct inbounds, or restart itself.
+-	if configChanged && s.kernel.IsRunning() {
+-		if err := s.kernel.Reload(s.lastConfig, s.lastUsers, s.cert.TLSCert()); err != nil {
+-			nlog.Core().Warn(fmt.Sprintf("reload failed, restarting: %v", err))
+-			s.startKernel(s.lastConfig, s.lastUsers)
+-		} else {
+-			s.appliedState.Config = s.lastConfig
+-			s.appliedState.Users = s.lastUsers
+-			if s.nodeLog != nil {
+-				s.nodeLog.Info(fmt.Sprintf("config updated, %d users", len(s.lastUsers)))
+-			}
+-		}
+-	} else if !s.kernel.IsRunning() {
+-		s.startKernel(s.lastConfig, s.lastUsers)
++	if configChanged {
++		s.forceReload = true
+ 	}
++	s.reconcileKernel(ctx)
+ }
+ 
+ func (s *Service) trackAndEnforce(ctx context.Context) {
+@@ -981,6 +1058,9 @@ func (s *Service) pushReportAsync() {
+ 	status := monitor.Collect()
+ 	metrics := s.buildMetrics(status)
+ 	metrics["kernel_status"] = s.kernel.IsRunning()
++	if reporter, ok := s.wsClient.(interface{ SendNodeStatus(map[string]interface{}) }); ok {
++		reporter.SendNodeStatus(metrics)
++	}
+ 
+ 	go func() {
+ 		defer s.pushActive.Store(false)
+@@ -1037,6 +1117,7 @@ func (s *Service) buildMetrics(status monitor.Status) map[string]interface{} {
+ 	m["total_connections"] = s.tracker.TotalConnections()
+ 	m["active_users"] = len(online)
+ 	m["total_users"] = len(lastUsers)
++	m["core_status"] = s.Status()
+ 
+ 	// Speed
+ 	m["inbound_speed"] = s.tracker.InboundSpeed()
+diff --git a/internal/service/service_test.go b/internal/service/service_test.go
+index 374ff7aa9a93dc9ffc4f4cf37f79769282247d7c..0e36bd3f30e6f2c3c11143862125691e01b296af 100644
+--- a/internal/service/service_test.go
++++ b/internal/service/service_test.go
+@@ -6,6 +6,8 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	"github.com/cedar2025/xboard-node/internal/tracker"
++
+ 	"github.com/cedar2025/xboard-node/internal/cert"
+ 	"github.com/cedar2025/xboard-node/internal/config"
+ 	"github.com/cedar2025/xboard-node/internal/kernel"
+@@ -17,14 +19,19 @@ import (
+ type fakeKernel struct {
+ 	running bool
+ 
+-	startErr  error
+-	updateErr error
+-	addErr    error
++	startErr            error
++	startWithoutRunning bool
++	updateErr           error
++	addErr              error
++	reloadErr           error
+ 
+ 	startCalls  int
+ 	updateCalls int
+ 	addCalls    int
+ 	removeCalls int
++	stopCalls   int
++	reloadCalls int
++	onStart     func([]model.UserSpec)
+ 
+ 	onUpdateUsers func([]model.UserSpec)
+ 	onAddUsers    func([]model.UserSpec)
+@@ -34,23 +41,30 @@ type fakeKernel struct {
+ 	deviceLimitFunc func(string) (int, bool)
+ }
+ 
+-func (f *fakeKernel) Name() string { return "fake" }
+-func (f *fakeKernel) Protocols() []string { return []string{"vless"} }
++func (f *fakeKernel) Name() string                      { return "fake" }
++func (f *fakeKernel) Protocols() []string               { return []string{"vless"} }
+ func (f *fakeKernel) Capabilities() kernel.Capabilities { return kernel.Capabilities{} }
+ func (f *fakeKernel) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
+ 	_, _, _ = nodeConfig, users, tls
+ 	f.startCalls++
++	if f.running {
++		return errors.New("duplicate Start on running kernel")
++	}
++	if f.onStart != nil {
++		f.onStart(users)
++	}
+ 	if f.startErr != nil {
+ 		return f.startErr
+ 	}
+-	f.running = true
++	f.running = !f.startWithoutRunning
+ 	return nil
+ }
+-func (f *fakeKernel) Stop() { f.running = false }
++func (f *fakeKernel) Stop()           { f.stopCalls++; f.running = false }
+ func (f *fakeKernel) IsRunning() bool { return f.running }
+ func (f *fakeKernel) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
+ 	_, _, _ = nodeConfig, users, tls
+-	return nil
++	f.reloadCalls++
++	return f.reloadErr
+ }
+ func (f *fakeKernel) AddUsers(users []model.UserSpec) (int, error) {
+ 	f.addCalls++
+@@ -92,13 +106,15 @@ func (f *fakeKernel) CloseUserConnections(ctx context.Context, uuid string) erro
+ 	return nil
+ }
+ func (f *fakeKernel) SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter) { f.speedLimitFunc = fn }
+-func (f *fakeKernel) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) { f.deviceLimitFunc = fn }
+-func (f *fakeKernel) UpdateGlobalDevices(users map[int][]string) { _ = users }
+-func (f *fakeKernel) ClearGlobalDevices() {}
++func (f *fakeKernel) SetDeviceLimitFunc(fn func(uuid string) (int, bool))  { f.deviceLimitFunc = fn }
++func (f *fakeKernel) UpdateGlobalDevices(users map[int][]string)           { _ = users }
++func (f *fakeKernel) ClearGlobalDevices()                                  {}
+ 
+ func newTestService(k *fakeKernel) *Service {
+ 	sharedLimiter := limiter.New()
+ 	s := &Service{
++		cfg:          &config.Config{Kernel: config.KernelConfig{Type: "singbox"}},
++		tracker:      tracker.New(),
+ 		kernel:       k,
+ 		limiter:      sharedLimiter,
+ 		speedTracker: limiter.NewSpeedTracker(sharedLimiter),
+@@ -115,6 +131,7 @@ func TestApplyUserUpdatePreparesLimiterBeforeKernelUpdate(t *testing.T) {
+ 	s.lastConfig = &model.NodeSpec{Protocol: "vless"}
+ 	oldUsers := []model.UserSpec{{ID: 1, UUID: "uuid-old", SpeedLimit: 4}}
+ 	s.updateUserState(oldUsers)
++	s.recordApplied()
+ 
+ 	newUsers := []model.UserSpec{{ID: 2, UUID: "uuid-new", SpeedLimit: 8}}
+ 	k.onUpdateUsers = func(users []model.UserSpec) {
+@@ -139,7 +156,7 @@ func TestApplyUserUpdatePreparesLimiterBeforeKernelUpdate(t *testing.T) {
+ 	}
+ }
+ 
+-func TestApplyUserUpdateRestoresStateWhenKernelAndRestartFail(t *testing.T) {
++func TestApplyUserUpdateRetainsDesiredStateWhenKernelAndRestartFail(t *testing.T) {
+ 	k := &fakeKernel{
+ 		running:   true,
+ 		updateErr: errors.New("update failed"),
+@@ -149,7 +166,7 @@ func TestApplyUserUpdateRestoresStateWhenKernelAndRestartFail(t *testing.T) {
+ 	s.lastConfig = &model.NodeSpec{Protocol: "vless"}
+ 	oldUsers := []model.UserSpec{{ID: 1, UUID: "uuid-old", SpeedLimit: 4}}
+ 	s.updateUserState(oldUsers)
+-	oldHash := s.lastUserHash
++	s.recordApplied()
+ 
+ 	newUsers := []model.UserSpec{{ID: 2, UUID: "uuid-new", SpeedLimit: 8}}
+ 	s.applyUserUpdate(context.Background(), newUsers, computeUserHash(newUsers))
+@@ -157,17 +174,20 @@ func TestApplyUserUpdateRestoresStateWhenKernelAndRestartFail(t *testing.T) {
+ 	if got := k.startCalls; got != 1 {
+ 		t.Fatalf("Start call count = %d, want 1", got)
+ 	}
+-	if len(s.lastUsers) != 1 || s.lastUsers[0].UUID != "uuid-old" {
+-		t.Fatalf("lastUsers = %#v, want restored old users", s.lastUsers)
++	if len(s.lastUsers) != 1 || s.lastUsers[0].UUID != "uuid-new" {
++		t.Fatalf("lost desired users after failed application: %#v", s.lastUsers)
++	}
++	if s.lastUserHash != computeUserHash(newUsers) {
++		t.Fatal("desired hash was rolled back")
+ 	}
+-	if s.lastUserHash != oldHash {
+-		t.Fatalf("lastUserHash = %q, want %q", s.lastUserHash, oldHash)
++	if k.running || s.Status().Ready || len(s.appliedState.Users) != 0 {
++		t.Fatal("failed kernel must not claim applied users or readiness")
+ 	}
+-	if s.speedTracker.GetLimiter("uuid-old") == nil {
+-		t.Fatal("expected old limiter to be restored after rollback")
++	if s.retryAt.IsZero() {
++		t.Fatal("failed start must schedule retry")
+ 	}
+-	if s.speedTracker.GetLimiter("uuid-new") != nil {
+-		t.Fatal("expected new limiter to be removed after rollback")
++	if s.speedTracker.GetLimiter("uuid-new") == nil {
++		t.Fatal("desired limit must be retained for retry")
+ 	}
+ }
+ 
+@@ -177,11 +197,12 @@ func TestApplyUserDeltaAddPreparesLimiterBeforeKernelUpdate(t *testing.T) {
+ 	s.lastConfig = &model.NodeSpec{Protocol: "vless"}
+ 	oldUsers := []model.UserSpec{{ID: 1, UUID: "uuid-old", SpeedLimit: 4}}
+ 	s.updateUserState(oldUsers)
++	s.recordApplied()
+ 
+ 	delta := []model.UserSpec{{ID: 2, UUID: "uuid-new", SpeedLimit: 8}}
+-	k.onAddUsers = func(users []model.UserSpec) {
+-		if len(users) != 1 || users[0].UUID != "uuid-new" {
+-			t.Fatalf("unexpected users passed to AddUsers: %#v", users)
++	k.onUpdateUsers = func(users []model.UserSpec) {
++		if len(users) != 2 {
++			t.Fatalf("atomic delta merge lost users: %#v", users)
+ 		}
+ 		if got := k.speedLimitFunc("uuid-new"); got == nil {
+ 			t.Fatal("expected delta user's limiter to be visible before kernel AddUsers")
+@@ -190,15 +211,14 @@ func TestApplyUserDeltaAddPreparesLimiterBeforeKernelUpdate(t *testing.T) {
+ 
+ 	s.applyUserDelta(context.Background(), "add", delta)
+ 
+-	if got := k.addCalls; got != 1 {
+-		t.Fatalf("AddUsers call count = %d, want 1", got)
++	if got := k.updateCalls; got != 1 {
++		t.Fatalf("UpdateUsers call count = %d, want 1", got)
+ 	}
+ 	if s.speedTracker.GetLimiter("uuid-new") == nil {
+ 		t.Fatal("expected limiter for delta-added user after successful update")
+ 	}
+ }
+ 
+-
+ func TestValidateNodeRuntimeRejectsUnsupportedDNSProvider(t *testing.T) {
+ 	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+ 	err := validateNodeRuntime(cfg, []string{"http"}, &model.NodeSpec{

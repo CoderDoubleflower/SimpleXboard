@@ -53,6 +53,7 @@ Blade 入口为 `resources/views/admin.blade.php`，只加载本地清单中的�
 - 成员流量上限留空代表 `null`（不限），`0` 代表没有可用额度。节点上限的 `null` 和 `0` 则都代表不限。两者按后端既有语义分别处理。
 - 成员“实际流量”只显示 `actual_u + actual_d`；“额度已用”显示含历史折算量的 `u + d`。不将历史额度混称为实际传输量。
 - 节点“启用”影响成员授权；“订阅展示”只影响订阅内容。机器记录及其令牌独立于节点。
+- 机器心跳、WebSocket 在线和核心就绪分别显示。只有明确且未过期的核心报告计入“就绪节点”；未报告、无用户、启动失败和报告过期分别显示对应状态。核心错误可展开查看，监控状态不会移除合法订阅节点。
 - VLESS/REALITY 与 Hysteria2 提供常用连接字段。REALITY 公私钥和 Short ID 通过管理员接口生成，也可单独生成 Short ID；不依赖浏览器 WebCrypto，保存节点后才生效。已有其他协议和高级字段可通过 JSON 维护，编辑时保留未修改的扩展字段。
 - 备份从真实后端生成并通过授权请求下载。恢复说明提供服务器 CLI 操作，不提供网页覆盖数据库的按钮。失败任务仅展示安全文本，不提供任务重试或删除动作。
 - 更改后台路径后使用后端返回的同源 `admin_url` 跳转。更新密码或撤销全部会话后，当前会话也立即退出。
@@ -86,6 +87,9 @@ python3 tests/Support/run-stack.py \
 ```sh
 python3 tests/Support/run-stack.py --without-scheduler -- python3 panel/tests/reality_generation.py
 python3 tests/Support/run-stack.py --without-scheduler -- python3 panel/tests/visual_review.py
+python3 tests/Support/run-stack.py --without-scheduler -- python3 panel/tests/node_status.py
 ```
 
 `reality_generation.py` 覆盖普通 HTTP、无 WebCrypto 的生成、取消和保存流程。`visual_review.py` 检查桌面、平板、小手机与横屏布局、长名称、键盘导航、表单可达性，并保存遮蔽凭据的截图。
+
+`node_status.py` 使用实际认证接口与 WebSocket 验证三类状态独立展示、异常文字安全、手机布局、期望/应用用户数量不一致及概览计数。实际节点与代理请求由 `tests/Integration/node_core_lifecycle.py` 验证。

@@ -5,6 +5,7 @@ namespace App\WebSocket;
 use App\Models\Server;
 use App\Services\DeviceStateService;
 use App\Services\NodeRegistry;
+use App\Services\NodeHealthService;
 use App\Services\ServerService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -18,7 +19,7 @@ class NodeEventHandlers
      */
     public static function handlePong(TcpConnection $conn, int $nodeId, array $data = []): void
     {
-        Cache::put("node_ws_alive:{$nodeId}", true, 86400);
+        NodeHealthService::touchControl($nodeId);
     }
 
     /**
@@ -29,6 +30,7 @@ class NodeEventHandlers
         $node = Server::find($nodeId);
         if (!$node) return;
 
+        NodeHealthService::touchControl($nodeId);
         $nodeType = strtoupper($node->type);
         Cache::put(\App\Utils\CacheKey::get('SERVER_' . $nodeType . '_LAST_CHECK_AT', $nodeId), time(), 3600);
         ServerService::updateMetrics($node, $data);

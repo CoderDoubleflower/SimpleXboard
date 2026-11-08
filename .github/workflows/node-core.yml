@@ -1,0 +1,96 @@
+name: Verify node core lifecycle
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      NODE_BUILD_TAGS: with_quic,with_utls,with_wireguard,with_acme,with_clash_api
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the reported node version
+        uses: actions/checkout@v4
+        with:
+          repository: cedar2025/Xboard-Node
+          ref: 0a29338e1f102a462363ce3527417029f89bab28
+          path: .node-source
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .node-source/go.mod
+          cache-dependency-path: .node-source/go.sum
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, intl, bcmath, pdo_sqlite, redis, zip, sodium, pcntl, sockets
+          coverage: none
+          tools: composer:2.11.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the isolated panel and exact client version
+        run: |
+          composer install --prefer-dist --no-interaction --no-scripts
+          python -m pip install websockets==16.0
+          sudo apt-get update
+          sudo apt-get install -y redis-server curl openssl
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/mihomo.gz" https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-linux-amd64-compatible-v1.19.29.gz
+          echo "5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094  $RUNNER_TEMP/mihomo.gz" | sha256sum --check
+          gzip --decompress --stdout "$RUNNER_TEMP/mihomo.gz" > "$RUNNER_TEMP/mihomo"
+          chmod +x "$RUNNER_TEMP/mihomo"
+      - name: Build the unmodified v1.13 reproducer
+        working-directory: .node-source
+        run: CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags '-X main.version=v1.13' -o "$RUNNER_TEMP/xboard-node-original" ./cmd/xboard-node
+      - name: Reproduce zero-user startup on the original core lifecycle
+        timeout-minutes: 4
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-baseline -- python tests/Integration/node_core_lifecycle.py --xboard-node "$RUNNER_TEMP/xboard-node-original" --mihomo "$RUNNER_TEMP/mihomo" --expect-stalled
+      - name: Apply the reviewed lifecycle patch
+        working-directory: .node-source
+        run: |
+          test "$(git rev-parse HEAD)" = 0a29338e1f102a462363ce3527417029f89bab28
+          git apply --check ../patches/xboard-node/v1.13-core-lifecycle.patch
+          git apply ../patches/xboard-node/v1.13-core-lifecycle.patch
+      - name: Run node regression tests
+        working-directory: .node-source
+        run: go test -p 2 -tags "$NODE_BUILD_TAGS" ./...
+      - name: Check concurrent lifecycle and status access
+        working-directory: .node-source
+        run: go test -p 2 -race -tags "$NODE_BUILD_TAGS" ./internal/service ./internal/controlplane ./internal/machine ./cmd/xboard-node
+      - name: Build the fixed node
+        working-directory: .node-source
+        run: |
+          CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags "-s -w -X main.version=v1.13-simplexboard.1 -X main.commit=0a29338+${GITHUB_SHA:0:7} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/xboard-node" ./cmd/xboard-node
+      - name: Verify machine lifecycle through real REALITY and mihomo traffic
+        timeout-minutes: 8
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-fixed -- python tests/Integration/node_core_lifecycle.py --xboard-node "$RUNNER_TEMP/xboard-node" --mihomo "$RUNNER_TEMP/mihomo"
+      - name: Checksum the verified binary
+        working-directory: ${{ runner.temp }}
+        run: sha256sum xboard-node > xboard-node.sha256
+      - name: Save the verified Linux amd64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xboard-node-v1.13-simplexboard.1-linux-amd64
+          path: |
+            ${{ runner.temp }}/xboard-node
+            ${{ runner.temp }}/xboard-node.sha256
+          retention-days: 14
+      - name: Save lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-core-evidence
+          path: storage/framework/testing/node-core-*/
+          if-no-files-found: ignore
+          retention-days: 14

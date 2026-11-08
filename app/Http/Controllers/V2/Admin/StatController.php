@@ -95,6 +95,7 @@ class StatController extends Controller
         $lastMonthNewUsers = User::where('is_admin', false)->where('created_at', '>=', $lastMonthStart)
             ->where('created_at', '<', $currentMonthStart)->count();
         $onlineMembers = User::eligible()->where('t', '>=', $now - 600);
+        $readyNodes = Server::where('enabled', true)->get()->filter(fn ($server) => $server->core_ready)->count();
 
         return [
             'currentMonthNewUsers' => $currentMonthNewUsers,
@@ -107,7 +108,8 @@ class StatController extends Controller
                 : 0,
             'onlineUsers' => (clone $onlineMembers)->count(),
             'onlineDevices' => (clone $onlineMembers)->sum('online_count'),
-            'onlineNodes' => Server::where('enabled', true)->get()->filter(fn ($server) => (bool) $server->is_online)->count(),
+            'onlineNodes' => $readyNodes,
+            'readyNodes' => $readyNodes,
             'todayTraffic' => $this->getTrafficTotals(Carbon::today()->timestamp, Carbon::tomorrow()->timestamp),
             'monthTraffic' => $this->getTrafficTotals($currentMonthStart, Carbon::tomorrow()->timestamp),
             'totalTraffic' => $this->getTrafficTotals(),
