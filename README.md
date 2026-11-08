@@ -105,6 +105,8 @@ python -m pip install -r tests/requirements-e2e.txt
 python -m playwright install --with-deps chromium
 python tests/Support/run-stack.py -- python tests/Integration/node_lifecycle.py
 python tests/Support/run-stack.py --without-scheduler -- python panel/tests/e2e.py
+python tests/Support/run-stack.py --without-scheduler -- python panel/tests/reality_generation.py
+python tests/Support/run-stack.py --without-scheduler -- python panel/tests/visual_review.py
 ```
 
 集成测试要求本机 PHP Redis 扩展、Redis 服务端程序及 Python；测试脚本创建独立 SQLite、Redis 和随机端口，启动真实 Horizon/Workerman，结束后清理，不使用已有业务库。可通过 `--php`、`--redis` 指定程序路径，通过 `--artifacts` 指定测试记录目录。

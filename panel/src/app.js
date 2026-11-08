@@ -43,10 +43,23 @@ function logo() {
   return h('span', { class: 'brand-symbol', 'aria-hidden': 'true' }, h('span'), h('span'), h('span'));
 }
 
+function brandCopy() {
+  return h('span', { class: 'brand-copy' }, h('strong', {}, 'SimpleXboard'), h('small', {}, '个人网络控制台'));
+}
+
+function loginNetwork() {
+  return h('div', { class: 'login-network', 'aria-hidden': 'true' },
+    h('div', { class: 'network-hub' }, icon('lock'), h('span', {}, '控制台')),
+    h('div', { class: 'network-branches' }, [
+      ['server', 'VPS'], ['globe', '节点'], ['users', '成员'],
+    ].map(([symbol, label]) => h('div', { class: 'network-node' },
+      h('span', { class: 'network-node-icon' }, icon(symbol)), h('span', {}, label)))));
+}
+
 function loginPage(message = '') {
   root.replaceChildren();
   const errors = h('div', { class: 'login-message' }, message ? notice(message) : null);
-  const email = h('input', { class: 'input', id: 'login-email', name: 'email', type: 'email', autocomplete: 'username', required: true, placeholder: 'admin@example.com' });
+  const email = h('input', { class: 'input', id: 'login-email', name: 'email', type: 'email', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', required: true, placeholder: 'admin@example.com' });
   const password = h('input', { class: 'input', id: 'login-password', name: 'password', type: 'password', autocomplete: 'current-password', required: true, placeholder: '输入管理员密码' });
   const submit = button('登录管理台', { tone: 'primary', type: 'submit', icon: 'arrow' });
   const form = h('form', { class: 'login-form' },
@@ -71,12 +84,22 @@ function loginPage(message = '') {
     });
   });
   root.append(h('main', { class: 'login-layout' },
-    h('section', { class: 'login-intro' },
-      h('div', { class: 'brand login-brand' }, logo(), h('span', {}, 'SimpleXboard')),
-      h('div', { class: 'login-intro-copy' }, h('p', { class: 'eyebrow' }, 'PRIVATE NETWORK'), h('h1', {}, '自己的节点，', h('br'), '清楚地掌控。'), h('p', {}, '在一个地方管理 VPS、节点与成员订阅。轻量、直接，为你的私人网络服务。')),
-      h('div', { class: 'login-footnote' }, h('span', { class: 'small-dot' }), '管理员专用 · 独立成员订阅')),
-    h('section', { class: 'login-card-wrap' }, h('div', { class: 'login-card' }, h('span', { class: 'login-lock' }, icon('lock')), h('h2', {}, '登录管理台'), h('p', { class: 'muted' }, bootstrap.title || 'SimpleXboard'), form,
-      h('p', { class: 'login-note' }, '成员通过专属订阅链接连接，无需登录此管理台。')))));
+    h('section', { class: 'login-intro', 'aria-labelledby': 'login-intro-title' },
+      h('div', { class: 'brand login-brand' }, logo(), brandCopy()),
+      h('div', { class: 'login-intro-copy' },
+        h('p', { class: 'eyebrow' }, 'PRIVATE NETWORK'),
+        h('h1', { id: 'login-intro-title' }, '自己的网络，', h('br'), '清楚地掌控。'),
+        h('p', {}, 'VPS、节点与成员订阅，在同一个地方管理。')),
+      loginNetwork(),
+      h('div', { class: 'login-footnote' }, icon('shield'), h('span', {}, '管理员专用 · 独立成员订阅'))),
+    h('section', { class: 'login-card-wrap', 'aria-labelledby': 'login-title' },
+      h('div', { class: 'login-card' },
+        h('div', { class: 'login-card-heading' },
+          h('span', { class: 'login-lock', 'aria-hidden': 'true' }, icon('lock')),
+          h('div', {}, h('p', { class: 'login-kicker' }, '管理员入口'), h('h2', { id: 'login-title' }, '登录管理台'))),
+        h('p', { class: 'login-description' }, '使用管理员账户访问 ', h('strong', {}, bootstrap.title || 'SimpleXboard'), '。'),
+        form,
+        h('p', { class: 'login-note' }, '成员使用专属订阅链接，无需登录管理台。')))));
   document.title = `登录 · ${bootstrap.title || 'SimpleXboard'}`;
 }
 
@@ -93,18 +116,37 @@ function shell() {
     signOut();
   }) });
   links = pages.map(page => h('a', { href: `#/${page.id}`, class: 'nav-link', 'data-page': page.id }, icon(page.icon), h('span', {}, page.label)));
-  breadcrumb = h('span', { class: 'breadcrumb-current' }, '概览');
-  content = h('div', { id: 'page-content', class: 'page-content', tabindex: '-1' });
+  breadcrumb = h('span', { id: 'current-page-label', class: 'breadcrumb-current' }, '概览');
+  content = h('div', { id: 'page-content', class: 'page-content', role: 'region', 'aria-label': '页面内容', tabindex: '-1' });
+  const skipLink = h('a', { class: 'skip-link', href: '#page-content', onClick: event => {
+    // The app routes by hash; focus the region without replacing that route.
+    event.preventDefault();
+    content.focus();
+  } }, '跳至主要内容');
   root.replaceChildren(h('div', { class: 'app-shell' },
+    skipLink,
     h('aside', { class: 'sidebar' },
-      h('a', { href: '#/overview', class: 'brand', 'aria-label': 'SimpleXboard 概览' }, logo(), h('span', {}, 'SimpleXboard')),
-      h('div', { class: 'sidebar-label' }, '管理控制台'),
+      h('a', { href: '#/overview', class: 'brand', 'aria-label': 'SimpleXboard 概览' }, logo(), brandCopy()),
+      h('div', { class: 'sidebar-label' }, '工作区'),
       h('nav', { class: 'main-nav', 'aria-label': '主导航' }, links),
-      h('div', { class: 'sidebar-footer' }, h('div', { class: 'instance-label' }, h('span', { class: 'small-dot' }), '私有实例'), h('span', { class: 'build-label' }, bootstrap.version ? `版本 ${bootstrap.version}` : `构建 ${String(bootstrap.build || '').slice(0, 8)}`))),
+      h('div', { class: 'sidebar-footer' },
+        h('div', { class: 'instance-label' }, icon('lock'), h('span', {}, '私有实例')),
+        h('p', { class: 'instance-description' }, '成员使用独立订阅'),
+        h('span', { class: 'build-label' }, bootstrap.version ? `版本 ${bootstrap.version}` : `构建 ${String(bootstrap.build || '').slice(0, 8)}`))),
     h('div', { class: 'workspace' },
-      h('header', { class: 'topbar' }, h('div', { class: 'breadcrumb' }, h('span', { class: 'breadcrumb-root' }, bootstrap.title || 'SimpleXboard'), icon('chevron'), breadcrumb),
-        h('div', { class: 'topbar-actions' }, button('刷新', { icon: 'refresh', tone: 'quiet', onClick: () => renderPage() }), h('span', { class: 'topbar-divider' }), h('div', { class: 'account-label', title: profile.email }, h('span', { class: 'avatar' }, String(profile.name || profile.email || 'A').slice(0, 1).toUpperCase()), h('span', {}, '管理员')), logout)),
-      h('main', { class: 'main-content' }, content))));
+      h('header', { class: 'topbar' },
+        h('div', { class: 'workspace-context' },
+          h('span', { class: 'workspace-caption' }, '管理控制台'),
+          h('div', { class: 'breadcrumb' }, h('span', { class: 'breadcrumb-root' }, bootstrap.title || 'SimpleXboard'), icon('chevron'), breadcrumb)),
+        h('div', { class: 'topbar-actions' },
+          button('刷新', { icon: 'refresh', tone: 'quiet', title: '刷新当前页面', onClick: () => renderPage() }),
+          h('span', { class: 'topbar-divider', 'aria-hidden': 'true' }),
+          h('div', { class: 'account-label', title: profile.email },
+            h('span', { class: 'avatar', 'aria-hidden': 'true' }, String(profile.name || profile.email || 'A').slice(0, 1).toUpperCase()),
+            h('span', { class: 'account-copy' },
+              h('span', { class: 'account-name' }, profile.name || '管理员'),
+              h('span', { class: 'account-email' }, profile.email))), logout)),
+      h('main', { class: 'main-content', 'aria-labelledby': 'current-page-label' }, content))));
   renderPage();
 }
 

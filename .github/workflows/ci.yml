@@ -62,6 +62,9 @@ jobs:
       - name: Exercise REALITY generation without browser WebCrypto
         timeout-minutes: 5
         run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/reality-e2e -- python panel/tests/reality_generation.py
+      - name: Review responsive layouts and keyboard access
+        timeout-minutes: 5
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/visual-e2e -- python panel/tests/visual_review.py
       - name: Save integration evidence
         if: always()
         uses: actions/upload-artifact@v4

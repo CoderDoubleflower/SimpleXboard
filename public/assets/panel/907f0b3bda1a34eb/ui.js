@@ -83,11 +83,15 @@ export function select(name, options, value, attributes = {}) {
     options.map(option => h('option', { value: option.value }, option.label)));
 }
 
+let hintSequence = 0;
+
 export function field(label, control, { hint, wide = false, required = false } = {}) {
   const target = control.matches('input,select,textarea') ? control : control.querySelector('input,select,textarea');
+  const hintId = hint ? `field-hint-${++hintSequence}` : null;
+  if (target && hintId) target.setAttribute('aria-describedby', [target.getAttribute('aria-describedby'), hintId].filter(Boolean).join(' '));
   return h('div', { class: `field ${wide ? 'field-wide' : ''}` },
     h('label', { for: target?.id || undefined, class: 'field-label' }, label, required ? h('span', { class: 'required', 'aria-hidden': 'true' }, ' *') : null),
-    control, hint ? h('p', { class: 'field-hint' }, hint) : null);
+    control, hint ? h('p', { class: 'field-hint', id: hintId }, hint) : null);
 }
 
 export function checkbox(name, label, checked = false, hint = '') {
@@ -102,7 +106,15 @@ export function textarea(name, value = '', attributes = {}) {
 
 export function secretInput(name, value = '', attributes = {}) {
   const control = input(name, value, { type: 'password', autocomplete: 'off', ...attributes });
-  const toggle = iconButton('显示或隐藏', 'eye', () => { control.type = control.type === 'password' ? 'text' : 'password'; });
+  const toggle = iconButton('显示内容', 'eye', () => {
+    const visible = control.type === 'password';
+    control.type = visible ? 'text' : 'password';
+    toggle.setAttribute('aria-pressed', String(visible));
+    toggle.setAttribute('aria-label', visible ? '隐藏内容' : '显示内容');
+    toggle.title = visible ? '隐藏内容' : '显示内容';
+  });
+  toggle.setAttribute('aria-controls', control.id);
+  toggle.setAttribute('aria-pressed', 'false');
   return h('div', { class: 'secret-input', id: `control-${name}` }, control, toggle);
 }
 
@@ -141,9 +153,10 @@ export function errorState(error, retry) {
 }
 
 export function table(columns, rows, { className = '' } = {}) {
-  return h('div', { class: `table-wrap ${className}` }, h('table', {},
-    h('thead', {}, h('tr', {}, columns.map(column => h('th', { scope: 'col', class: column.className ?? '' }, column.label)))),
-    h('tbody', {}, rows.map(row => h('tr', {}, columns.map(column => h('td', { 'data-label': column.label, class: column.className ?? '' }, column.render(row))))))));
+  // Explicit roles retain table relationships when narrow screens use CSS grid cards.
+  return h('div', { class: `table-wrap ${className}` }, h('table', { role: 'table' },
+    h('thead', { role: 'rowgroup' }, h('tr', { role: 'row' }, columns.map(column => h('th', { role: 'columnheader', scope: 'col', class: column.className ?? '' }, column.label)))),
+    h('tbody', { role: 'rowgroup' }, rows.map(row => h('tr', { role: 'row' }, columns.map(column => h('td', { role: 'cell', 'data-label': column.label, class: column.className ?? '' }, column.render(row))))))));
 }
 
 export function pagination({ current = 1, total = 0, perPage = 20, onChange }) {
@@ -250,8 +263,23 @@ export function confirmAction({ title, description, label = '确认', onConfirm,
 }
 
 export function tabs(items, selected, onChange) {
-  return h('div', { class: 'tabs', role: 'tablist' }, items.map(item => button(item.label, {
+  function activate(value) {
+    const host = tabList.parentElement;
+    onChange(value);
+    // Pages recreate their tab list when selected; keep keyboard focus on that list.
+    const current = tabList.isConnected ? tabList : host?.querySelector('[role="tablist"]');
+    current?.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
+  }
+  const tabList = h('div', { class: 'tabs', role: 'tablist' }, items.map((item, index) => button(item.label, {
     className: selected === item.value ? 'tab selected' : 'tab', role: 'tab', 'aria-selected': String(selected === item.value),
-    onClick: () => onChange(item.value),
+    tabindex: selected === item.value ? '0' : '-1',
+    onClick: () => activate(item.value),
+    onKeydown: event => {
+      const next = { ArrowRight: (index + 1) % items.length, ArrowLeft: (index - 1 + items.length) % items.length, Home: 0, End: items.length - 1 }[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      activate(items[next].value);
+    },
   })));
+  return tabList;
 }
