@@ -150,6 +150,11 @@
       color: var(--success);
     }
 
+    .copy-status {
+      color: var(--danger);
+      font-size: 0.875rem;
+    }
+
     .qr-section {
       display: flex;
       justify-content: center;
@@ -257,14 +262,15 @@
     <div class="links-section">
       <h2 class="links-title">{{ __('Subscription Link') }}</h2>
       <div class="link-item">
-        <input type="text" value="{{ $subscription_url }}" readonly id="sub_url" class="link-input" onclick="this.select()">
-        <button class="copy-btn" onclick="copyToClipboard('sub_url')" title="{{ __('Copy') }}">
+        <input type="text" value="{{ $subscription_url }}" readonly id="sub_url" class="link-input" onclick="this.select()" aria-label="{{ __('Subscription Link') }}" aria-describedby="copy-status">
+        <button type="button" class="copy-btn" onclick="copyToClipboard('sub_url')" title="{{ __('Copy') }}" data-copy-label="{{ __('Copy') }}" data-copied-label="{{ __('Copied') }}">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
           </svg>
           <span>{{ __('Copy') }}</span>
         </button>
       </div>
+      <p id="copy-status" class="copy-status" role="status" aria-live="polite" data-error-message="{{ __('Automatic copy failed. The link is selected; copy it manually.') }}"></p>
       <div class="qr-section">
         <img src="data:image/svg+xml;base64,{{ $qr_code }}" alt="{{ __('QR Code') }}">
       </div>
@@ -272,23 +278,53 @@
   </div>
 
   <script>
-    function copyToClipboard(elementId) {
-      const element = document.getElementById(elementId);
-      element.select();
-      document.execCommand('copy');
-      element.blur();
+    let copyFeedbackTimer;
 
+    async function copyToClipboard(elementId) {
+      const element = document.getElementById(elementId);
       const btn = element.nextElementSibling;
       const span = btn.querySelector('span');
-      const originalText = span.textContent;
+      const status = document.getElementById('copy-status');
+      if (btn.getAttribute('aria-busy') === 'true') return;
 
-      btn.classList.add('copied');
-      span.textContent = '{{ __('Copied') }}';
+      clearTimeout(copyFeedbackTimer);
+      btn.classList.remove('copied');
+      span.textContent = btn.dataset.copyLabel;
+      status.textContent = '';
+      btn.setAttribute('aria-busy', 'true');
 
-      setTimeout(() => {
-        btn.classList.remove('copied');
-        span.textContent = originalText;
-      }, 1000);
+      const selectLink = () => {
+        element.focus({ preventScroll: true });
+        element.select();
+        element.setSelectionRange(0, element.value.length);
+      };
+      let copied = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          try {
+            await navigator.clipboard.writeText(element.value);
+            copied = true;
+          } catch { /* Try the selected-input fallback below. */ }
+        }
+        if (!copied) {
+          selectLink();
+          copied = document.execCommand('copy') === true;
+        }
+      } catch { /* Keep the link selected for manual copying. */ }
+      finally { btn.removeAttribute('aria-busy'); }
+
+      if (copied) {
+        btn.focus({ preventScroll: true });
+        btn.classList.add('copied');
+        span.textContent = btn.dataset.copiedLabel;
+        copyFeedbackTimer = setTimeout(() => {
+          btn.classList.remove('copied');
+          span.textContent = btn.dataset.copyLabel;
+        }, 1000);
+      } else {
+        selectLink();
+        status.textContent = status.dataset.errorMessage;
+      }
     }
   </script>
 </body>

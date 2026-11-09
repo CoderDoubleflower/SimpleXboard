@@ -167,31 +167,92 @@ export function pagination({ current = 1, total = 0, perPage = 20, onChange }) {
       button('下一页', { disabled: current >= pages, onClick: () => onChange(current + 1) })));
 }
 
+function interactionRoot() {
+  // showModal() makes everything outside the active dialog inert, including
+  // temporary copy controls and live regions attached directly to the body.
+  return document.activeElement?.closest('dialog[open]')
+    ?? [...document.querySelectorAll('dialog[open]')].at(-1)
+    ?? document.body;
+}
+
 export function toast(message, tone = 'success') {
   let region = document.getElementById('toast-region');
   if (!region) {
     region = h('div', { id: 'toast-region', class: 'toast-region', 'aria-live': 'polite' });
-    document.body.append(region);
   }
+  interactionRoot().append(region);
   const item = h('div', { class: `toast toast-${tone}`, role: tone === 'error' ? 'alert' : 'status' }, icon(tone === 'error' ? 'warning' : 'check'), h('span', {}, message));
   while (region.children.length >= 3) region.firstElementChild.remove();
   region.append(item);
   setTimeout(() => item.remove(), tone === 'error' ? 7000 : 4000);
 }
 
-export async function copyText(text, message = '已复制') {
+function copyWithSelection(text) {
+  const focused = document.activeElement;
+  const selection = document.getSelection();
+  const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange()) : [];
+  const inputSelection = typeof focused?.selectionStart === 'number'
+    ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+  const control = h('textarea', { class: 'clipboard-fallback', value: text, readonly: true, tabindex: '-1', 'aria-label': '待复制内容' });
   try {
-    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(String(text));
-    else {
-      const control = h('textarea', { class: 'clipboard-fallback', value: String(text) });
-      document.body.append(control);
-      control.select();
-      const copied = document.execCommand('copy');
-      control.remove();
-      if (!copied) throw new Error('copy');
+    interactionRoot().append(control);
+    control.focus({ preventScroll: true });
+    control.select();
+    control.setSelectionRange(0, text.length);
+    // Never copy a stale selection if the temporary control cannot take focus.
+    if (document.activeElement !== control) return false;
+    return document.execCommand('copy') === true;
+  } catch {
+    return false;
+  } finally {
+    control.remove();
+    try {
+      if (focused?.isConnected) {
+        focused.focus({ preventScroll: true });
+        if (inputSelection) focused.setSelectionRange(...inputSelection);
+      }
+      if (!inputSelection && selection) {
+        selection.removeAllRanges();
+        for (const range of ranges) selection.addRange(range);
+      }
+    } catch {
+      // A copy event may remove the original control; restoring its selection
+      // must not turn an already successful copy into a failure.
     }
+  }
+}
+
+export async function copyText(text, message = '已复制') {
+  if (text === null || text === undefined || String(text) === '') {
+    toast('没有可复制的内容。', 'error');
+    return false;
+  }
+  const value = String(text);
+  try {
+    if (typeof navigator.clipboard?.writeText === 'function') {
+      await navigator.clipboard.writeText(value);
+      toast(message);
+      return true;
+    }
+  } catch {
+    // Permission/policy failures still allow selection-based copying in some
+    // browsers. Try it just as we do when the Clipboard API is unavailable.
+  }
+  if (copyWithSelection(value)) {
     toast(message);
-  } catch { toast('浏览器未允许复制，请选择内容后手动复制。', 'error'); }
+    return true;
+  }
+
+  const control = textarea('manual-copy', value, { readonly: true, rows: 5, class: 'input mono', spellcheck: 'false' });
+  openDialog({
+    title: '手动复制',
+    description: '浏览器未允许自动复制。请按 Ctrl+C / ⌘C，或长按下方内容复制。',
+    content: field('待复制内容', control),
+  });
+  control.focus({ preventScroll: true });
+  control.select();
+  control.setSelectionRange(0, value.length);
+  return false;
 }
 
 export async function runAction(control, action) {
@@ -250,10 +311,16 @@ export function openDialog({ title, description, content, submitLabel = '保存'
     }
   });
   dialog.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
-  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  dialog.addEventListener('close', () => {
+    const region = dialog.querySelector('#toast-region');
+    if (region) interactionRoot().append(region);
+    dialog.remove();
+  }, { once: true });
   dialog.append(form);
   document.body.append(dialog);
   dialog.showModal();
+  const region = document.getElementById('toast-region');
+  if (region) dialog.append(region);
   setTimeout(() => form.querySelector('input:not([type="checkbox"]):not([type="hidden"]), textarea, select')?.focus(), 0);
   return api;
 }

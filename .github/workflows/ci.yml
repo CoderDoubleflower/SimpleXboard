@@ -50,6 +50,11 @@ jobs:
           sudo apt-get install -y redis-server
           python -m pip install -r tests/requirements-e2e.txt
           python -m playwright install --with-deps chromium
+      - name: Verify clipboard fallbacks and modal feedback
+        timeout-minutes: 5
+        env:
+          E2E_ARTIFACT_DIR: storage/framework/testing/clipboard-e2e
+        run: python panel/tests/clipboard.py
       - name: Exercise a fresh install and administrator login
         timeout-minutes: 5
         run: python tests/Integration/install.py --artifacts storage/framework/testing/install-e2e
