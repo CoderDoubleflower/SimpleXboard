@@ -105,6 +105,8 @@ class UniProxyController extends Controller
             'swap.used' => 'required|integer|min:0',
             'disk.total' => 'required|integer|min:0',
             'disk.used' => 'required|integer|min:0',
+            'kernel_status' => 'sometimes|boolean',
+            'core_status' => 'sometimes|array',
         ]);
 
         ServerService::processStatus($node, $data);

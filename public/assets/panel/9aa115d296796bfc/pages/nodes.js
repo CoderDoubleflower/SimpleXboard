@@ -1,5 +1,5 @@
 import { h, icon, button, iconButton, badge, input, select, field, textarea, checkbox, secretInput, formValues, pageHeader, panel, loading, emptyState, errorState, notice, table, toast, copyText, runAction, openDialog, confirmAction, toggleSwitch, tabs } from '../ui.js';
-import { data, bytes, datetime, relativeTime, nodeStatus, protocolName, errorMessage } from '../format.js';
+import { data, bytes, datetime, relativeTime, nodeStatus, nodeConnections, protocolName, errorMessage } from '../format.js';
 import { nodePayload, gibValue } from '../domain.js';
 import { createRealityGenerator } from '../reality.js';
 
@@ -51,7 +51,16 @@ export async function nodesPage(host, context) {
     else body.append(table([
       { label: '节点', render: node => h('div', { class: 'row-identity' }, h('strong', {}, node.name), h('span', { class: 'mono muted' }, `${node.host}:${node.port}`), node.machine_id ? h('small', { class: 'muted' }, machines.find(machine => Number(machine.id) === Number(node.machine_id))?.name ?? `VPS #${node.machine_id}`) : null) },
       { label: '协议', render: node => h('span', { class: 'protocol-tag' }, protocolName(node)) },
-      { label: '运行状态', render: node => { const status = nodeStatus(node); return h('div', { class: 'stack-sm' }, badge(status.label, status.tone), h('small', { class: 'muted' }, relativeTime(node.last_check_at))); } },
+      { label: '运行状态', className: 'runtime-cell', render: node => {
+        const status = nodeStatus(node);
+        const connection = nodeConnections(node);
+        const core = node.core_status;
+        return h('div', { class: 'stack-sm node-runtime-state' }, badge(status.label, status.tone),
+          h('small', { class: 'muted' }, `${connection.machine} · ${connection.control}`),
+          core?.users != null && core?.applied_users != null ? h('small', { class: 'muted' }, `已应用 ${core.applied_users} / ${core.users} 位用户`) : null,
+          core?.error ? h('details', { class: 'runtime-error' }, h('summary', {}, '查看核心错误'), h('p', {}, core.error)) : null,
+          h('small', { class: 'muted' }, core?.updated_at ? `核心报告 ${relativeTime(core.updated_at)}` : '尚无核心报告'));
+      } },
       { label: '实际流量 / 倍率', render: node => h('div', { class: 'traffic-cell' },
         h('strong', {}, bytes(Number(node.u ?? 0) + Number(node.d ?? 0))),
         h('small', { class: 'muted' }, `↑ ${bytes(node.u ?? 0)} · ↓ ${bytes(node.d ?? 0)}`),
@@ -72,7 +81,7 @@ export async function nodesPage(host, context) {
 
 function machineCard(machine, context, reload) {
   const connected = machine.is_active && machine.last_seen_at && Date.now() / 1000 - machine.last_seen_at < 300;
-  const status = !machine.is_active ? ['接入已关闭', 'muted'] : connected ? ['已连接', 'success'] : ['等待心跳', 'warning'];
+  const status = !machine.is_active ? ['接入已关闭', 'muted'] : connected ? ['机器在线', 'success'] : [machine.last_seen_at ? '机器离线' : '等待心跳', 'warning'];
   const controls = h('div', { class: 'machine-actions' },
     button('接入命令', { icon: 'terminal', onClick: event => runAction(event.currentTarget, () => machineCredentials(machine, context)) }),
     h('div', { class: 'row-actions' },

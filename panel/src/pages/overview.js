@@ -1,5 +1,5 @@
 import { h, icon, button, badge, panel, pageHeader, loading, emptyState, errorState, notice, table } from '../ui.js';
-import { bytes, number, data, nodeStatus, protocolName, relativeTime } from '../format.js';
+import { bytes, number, data, nodeStatus, nodeConnections, protocolName } from '../format.js';
 
 function metric(label, value, detail, iconName, primary = false) {
   return h('article', { class: `metric${primary ? ' metric-primary' : ''}` },
@@ -41,7 +41,7 @@ export async function overviewPage(host, context) {
   if (statistics.status === 'fulfilled') {
     const stats = data(statistics.value);
     dashboard.append(h('div', { class: 'metrics-grid' },
-      metric('在线节点', h('span', {}, number(stats.onlineNodes), h('small', {}, ` / ${number(stats.enabledNodes ?? nodes?.filter(node => node.enabled !== false && node.enabled !== 0).length)}`)), '在线 / 已启用', 'server', true),
+      metric('就绪节点', h('span', {}, number(stats.readyNodes ?? nodes?.filter(node => node.core_ready === true && node.enabled !== false && node.enabled !== 0).length), h('small', {}, ` / ${number(stats.enabledNodes ?? nodes?.filter(node => node.enabled !== false && node.enabled !== 0).length)}`)), '核心就绪 / 已启用', 'server', true),
       metric('启用成员', number(stats.activeUsers), `共 ${number(stats.totalUsers)} 位成员`, 'users'),
       metric('今日实际流量', bytes(stats.todayTraffic?.total), `↑ ${bytes(stats.todayTraffic?.upload)}  ↓ ${bytes(stats.todayTraffic?.download)}`, 'activity'),
       metric('在线成员', number(stats.onlineUsers), `${number(stats.onlineDevices)} 台在线设备`, 'globe')));
@@ -53,13 +53,13 @@ export async function overviewPage(host, context) {
 
   if (nodes) {
     const enabled = nodes.filter(node => node.enabled !== false && node.enabled !== 0);
-    const offline = enabled.filter(node => !node.is_online);
-    const warning = offline.length ? notice(`${number(offline.length)} 个启用节点尚未上报有效心跳。请检查节点服务与网络连接。`, 'warning') : null;
+    const unready = enabled.filter(node => node.core_ready !== true);
+    const warning = unready.length ? notice(`${number(unready.length)} 个启用节点的核心尚未就绪。请在节点页查看用户、控制通道和核心状态。`, 'warning') : null;
     warning?.classList.add('node-status-summary');
     const nodeTable = nodes.length ? table([
       { label: '节点', render: node => h('div', { class: 'row-identity' }, h('strong', {}, node.name), h('span', { class: 'mono muted' }, `${node.host}:${node.port}`)) },
       { label: '协议', render: node => h('span', { class: 'protocol-tag' }, protocolName(node)) },
-      { label: '状态', render: node => { const status = nodeStatus(node); return h('div', { class: 'stack-sm' }, badge(status.label, status.tone), h('small', { class: 'muted' }, relativeTime(node.last_check_at))); } },
+      { label: '状态', render: node => { const status = nodeStatus(node); return h('div', { class: 'stack-sm' }, badge(status.label, status.tone), h('small', { class: 'muted' }, nodeConnections(node).control)); } },
     ], nodes.slice(0, 6)) : emptyState('开始接入你的节点', '添加 VPS 和节点连接参数后，这里会显示真实的运行状态。', button('管理 VPS 与节点', { tone: 'primary', icon: 'plus', onClick: () => navigate('nodes') }));
     left.append(panel('节点运行状态', [warning, nodeTable], {
       className: 'overview-nodes',

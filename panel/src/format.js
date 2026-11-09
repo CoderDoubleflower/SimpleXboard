@@ -49,8 +49,24 @@ export function memberStatus(member) {
 
 export function nodeStatus(node) {
   if (node.enabled === false || node.enabled === 0) return { label: '已停用', tone: 'muted' };
-  if (node.is_online) return { label: '在线', tone: 'success' };
-  return { label: node.last_check_at ? '离线' : '等待心跳', tone: 'warning' };
+  // A recent heartbeat only proves contact with the agent. Never infer proxy
+  // readiness from is_online when talking to an older panel or node agent.
+  if (node.core_ready === true) return { label: '核心就绪', tone: 'success' };
+  return ({
+    waiting_config: { label: '等待配置', tone: 'warning' },
+    waiting_users: { label: '等待用户', tone: 'muted' },
+    starting: { label: '核心启动中', tone: 'warning' },
+    running: { label: '核心未就绪', tone: 'warning' },
+    error: { label: '核心异常', tone: 'danger' },
+    stopped: { label: '核心未运行', tone: 'warning' },
+    stale: { label: '核心状态过期', tone: 'warning' },
+  })[node.core_status?.state] ?? { label: '核心状态未知', tone: 'warning' };
+}
+
+export function nodeConnections(node) {
+  const machine = node.machine_online === true ? '机器在线' : node.machine_online === false ? '机器离线' : node.machine_id ? '机器状态未知' : '未关联机器';
+  const control = node.control_online === true ? 'WebSocket 在线' : node.control_online === false ? 'WebSocket 断开' : '控制通道未知';
+  return { machine, control };
 }
 
 export function data(response) {

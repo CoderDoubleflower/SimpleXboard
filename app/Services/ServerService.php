@@ -20,7 +20,7 @@ class ServerService
      */
     public static function getAllServers(): Collection
     {
-        $query = Server::orderBy('sort', 'ASC');
+        $query = Server::with(['machine', 'parent.machine'])->orderBy('sort', 'ASC');
 
         return $query->get()->append([
             'last_check_at',
@@ -31,7 +31,12 @@ class ServerService
             'cache_key',
             'load_status',
             'metrics',
-            'online_conn'
+            'online_conn',
+            'core_status',
+            'core_ready',
+            'control_online',
+            'control_recent',
+            'machine_online'
         ]);
     }
 
@@ -146,6 +151,8 @@ class ServerService
      */
     public static function processStatus(Server $node, array $status): void
     {
+        self::touchNode($node);
+        NodeHealthService::report($node, $status);
         $nodeType = strtoupper($node->type);
         $nodeId = $node->id;
 
@@ -191,6 +198,7 @@ class ServerService
      */
     public static function updateMetrics(Server $node, array $metrics): void
     {
+        NodeHealthService::report($node, $metrics);
         $nodeType = strtoupper($node->type);
         $nodeId = $node->id;
         $cacheTime = max(300, (int) admin_setting('server_push_interval', 60) * 3);
@@ -212,7 +220,7 @@ class ServerService
             'ws' => $metrics['ws'] ?? [],
             'limits' => $metrics['limits'] ?? [],
             'updated_at' => now()->timestamp,
-            'kernel_status' => (bool) ($metrics['kernel_status'] ?? false),
+            'kernel_status' => is_bool($metrics['kernel_status'] ?? null) ? $metrics['kernel_status'] : null,
         ];
 
         Cache::put(

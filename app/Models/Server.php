@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Cache;
 use App\Utils\CacheKey;
+use App\Services\NodeHealthService;
 use App\Utils\Helper;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -400,14 +401,50 @@ class Server extends Model
 
     public function getAvailableStatusAttribute(): int
     {
-        $now = time();
-        if (!$this->last_check_at || ($now - self::CHECK_INTERVAL) >= $this->last_check_at) {
-            return self::STATUS_OFFLINE;
-        }
-        if (!$this->last_push_at || ($now - self::CHECK_INTERVAL) >= $this->last_push_at) {
-            return self::STATUS_ONLINE_NO_PUSH;
-        }
-        return self::STATUS_ONLINE;
+        if ($this->core_ready) return self::STATUS_ONLINE;
+        if ($this->control_online || $this->control_recent) return self::STATUS_ONLINE_NO_PUSH;
+        return self::STATUS_OFFLINE;
+    }
+
+    public function getCoreStatusAttribute(): array
+    {
+        return NodeHealthService::coreStatus($this);
+    }
+
+    public function getCoreReadyAttribute(): bool
+    {
+        return $this->core_status['ready'] === true;
+    }
+
+    /**
+     * Unbound child nodes retain the existing parent/alias health semantics.
+     * An explicit machine binding runs its own core, regardless of parent_id.
+     */
+    public function healthSourceId(): int
+    {
+        return (int) (!$this->machine_id && $this->parent_id ? $this->parent_id : $this->id);
+    }
+
+    public function getControlOnlineAttribute(): bool
+    {
+        return NodeHealthService::controlOnline($this->healthSourceId());
+    }
+
+    public function getControlRecentAttribute(): bool
+    {
+        // last_check_at retains legacy parent inheritance for compatibility;
+        // health of an independently bound machine must use its own reports.
+        $lastContact = Cache::get(CacheKey::get('SERVER_' . strtoupper($this->type) . '_LAST_CHECK_AT', $this->healthSourceId()));
+        return $lastContact !== null && now()->timestamp - self::CHECK_INTERVAL < $lastContact;
+    }
+
+    public function getMachineOnlineAttribute(): ?bool
+    {
+        $owner = $this->healthSourceId() === (int) $this->id ? $this : $this->parent;
+        if (!$owner?->machine_id) return null;
+        $machine = $owner->machine;
+        return $machine !== null && $machine->is_active && $machine->last_seen_at !== null
+            && now()->timestamp - self::CHECK_INTERVAL < $machine->last_seen_at;
     }
 
     public function parent(): BelongsTo
@@ -512,7 +549,7 @@ class Server extends Model
     {
         return Attribute::make(
             get: function () {
-                return (time() - 300 > $this->last_check_at) ? 0 : 1;
+                return $this->core_ready ? 1 : 0;
             }
         );
     }

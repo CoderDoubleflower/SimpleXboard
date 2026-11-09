@@ -9,6 +9,7 @@ use App\Models\ServerMachine;
 use App\Models\ServerMachineLoadHistory;
 use App\Services\NodeSyncService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class MachineController extends Controller
 {
@@ -27,6 +28,9 @@ class MachineController extends Controller
                     'notes' => $machine->notes,
                     'is_active' => $machine->is_active,
                     'last_seen_at' => $machine->last_seen_at,
+                    'machine_online' => $machine->is_active && $machine->last_seen_at !== null
+                        && now()->timestamp - Server::CHECK_INTERVAL < $machine->last_seen_at,
+                    'control_online' => (bool) Cache::get("machine_ws_alive:{$machine->id}", false),
                     'load_status' => $machine->load_status,
                     'servers_count' => $machine->servers_count,
                     'created_at' => $machine->created_at,

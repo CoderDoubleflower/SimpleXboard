@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Workerman\Connection\TcpConnection;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * In-memory registry for active WebSocket node connections.
@@ -103,12 +104,16 @@ class NodeRegistry
 
         // Remove nodes no longer on this machine
         foreach (array_diff($oldNodeIds, $newNodeIds) as $removedId) {
-            self::remove($removedId, $conn);
+            if (self::get($removedId) === $conn) {
+                self::remove($removedId, $conn);
+                Cache::forget("node_ws_alive:{$removedId}");
+            }
         }
 
         // Add newly assigned nodes (via add() to close any stale standalone connection)
         foreach ($newNodeIds as $nodeId) {
             self::add($nodeId, $conn);
+            NodeHealthService::touchControl($nodeId);
         }
 
         $conn->machineNodeIds = $newNodeIds;

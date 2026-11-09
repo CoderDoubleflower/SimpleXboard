@@ -6,6 +6,7 @@ use App\Models\Server;
 use App\Models\ServerMachine;
 use App\Services\DeviceStateService;
 use App\Services\NodeRegistry;
+use App\Services\NodeHealthService;
 use App\Services\ServerService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -187,7 +188,7 @@ class NodeWorker
 
         $conn->nodeId = $nodeId;
         NodeRegistry::add($nodeId, $conn);
-        Cache::put("node_ws_alive:{$nodeId}", true, 86400);
+        NodeHealthService::touchControl($nodeId);
 
         app(DeviceStateService::class)->clearAllNodeDevices($nodeId);
 
@@ -228,13 +229,14 @@ class NodeWorker
 
         $machine->forceFill(['last_seen_at' => now()->timestamp])->saveQuietly();
         NodeRegistry::addMachine($machineId, $conn);
+        NodeHealthService::touchMachineControl($machineId);
 
         // 把同一个连接注册到该机器下所有节点
         $nodeIds = [];
         $deviceService = app(DeviceStateService::class);
         foreach ($nodes as $node) {
             NodeRegistry::add($node->id, $conn);
-            Cache::put("node_ws_alive:{$node->id}", true, 86400);
+            NodeHealthService::touchControl($node->id);
             $deviceService->clearAllNodeDevices($node->id);
             $nodeIds[] = $node->id;
         }
@@ -273,10 +275,11 @@ class NodeWorker
         $event = $msg['event'] ?? '';
 
         // 机器连接：从消息中读取 node_id 来分派到具体节点
-        if (!empty($conn->machineNodeIds)) {
+        if (isset($conn->machineId)) {
             if ($event === 'pong') {
+                NodeHealthService::touchMachineControl((int) $conn->machineId);
                 foreach ($conn->machineNodeIds as $nid) {
-                    Cache::put("node_ws_alive:{$nid}", true, 86400);
+                    NodeHealthService::touchControl($nid);
                 }
                 return;
             }
@@ -305,9 +308,10 @@ class NodeWorker
         $service = app(DeviceStateService::class);
 
         // 机器模式：清理所有关联节点
-        if (!empty($conn->machineNodeIds)) {
+        if (isset($conn->machineId)) {
             $machineId = $conn->machineId ?? 'unknown';
             foreach ($conn->machineNodeIds as $nodeId) {
+                if (NodeRegistry::get($nodeId) !== $conn) continue;
                 NodeRegistry::remove($nodeId, $conn);
                 Cache::forget("node_ws_alive:{$nodeId}");
 
@@ -318,7 +322,10 @@ class NodeWorker
             }
 
             if (!empty($conn->machineId)) {
-                NodeRegistry::removeMachine((int) $conn->machineId, $conn);
+                if (NodeRegistry::getMachine((int) $conn->machineId) === $conn) {
+                    Cache::forget("machine_ws_alive:{$conn->machineId}");
+                    NodeRegistry::removeMachine((int) $conn->machineId, $conn);
+                }
             }
 
             Log::debug("[WS] Machine#{$machineId} disconnected", [
@@ -332,6 +339,7 @@ class NodeWorker
         // 旧模式：单节点
         if (!empty($conn->nodeId)) {
             $nodeId = $conn->nodeId;
+            if (NodeRegistry::get($nodeId) !== $conn) return;
             NodeRegistry::remove($nodeId, $conn);
             Cache::forget("node_ws_alive:{$nodeId}");
 
