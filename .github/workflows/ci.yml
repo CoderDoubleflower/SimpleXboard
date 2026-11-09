@@ -76,6 +76,9 @@ jobs:
       - name: Exercise managed outbounds, import and node selection on desktop and mobile
         timeout-minutes: 6
         run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/outbound-e2e -- python panel/tests/outbound_management.py
+      - name: Exercise one-command node maintenance and deletion guidance
+        timeout-minutes: 6
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/maintenance-e2e -- python panel/tests/node_maintenance.py
       - name: Save integration evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -122,6 +122,7 @@ python tests/Support/run-stack.py --without-scheduler -- python panel/tests/outb
 
 ## 升级、回退与验证记录
 
+- [VPS 一键安装、升级 / 替换与卸载](docs/node-maintenance.md)：在每台 VPS 的「节点维护」中复制一条命令，自动选择架构、校验、备份并执行。
 - [出站管理、节点升级与验收](docs/outbound-management.md)
 - [每节点流量倍率补丁与自测](docs/node-traffic-multipliers.md)
 - [第二轮交接与自测记录](docs/round-2-handoff.md)

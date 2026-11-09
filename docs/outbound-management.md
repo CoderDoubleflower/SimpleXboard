@@ -36,7 +36,7 @@ Shadowsocks 支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`、`2
 ## 升级与兼容
 
 1. 备份数据库和现有 `APP_KEY`。出站认证参数使用 Laravel 加密存储，恢复备份时必须保留相同的密钥。
-2. 按[节点构建说明](../patches/xboard-node/README.md)取得 `v1.13-simplexboard.2`。它基于固定的上游 v1.13，依次应用生命周期和出站补丁。保留 VPS 配置，替换节点二进制并重启节点服务；不要运行会覆盖为上游 dev 的原安装命令。
+2. 在「VPS → 节点维护 → 升级 / 替换」复制一条命令，在对应 VPS 执行。命令自动下载配套 `v1.13-simplexboard.2`、校验和备份，保留配置并重启服务；无需手动下载或逐个替换文件。详见[一键节点维护](node-maintenance.md)。需要自行编译时仍可使用[节点构建说明](../patches/xboard-node/README.md)。
 3. 更新面板代码或镜像，执行 `php artisan migrate --force`。源码部署还需要 `composer install --prefer-dist --no-interaction` 和 `npm --prefix panel run build`；按原部署方式重启常驻 Web、Horizon、WebSocket 进程。
 4. 等待新版节点完成认证请求。在出站页添加外部节点，然后编辑或创建入口并选择出口。
 

@@ -4,6 +4,7 @@ import { nodePayload, gibValue } from '../domain.js';
 import { createRealityGenerator } from '../reality.js';
 import { hasCustomRouting, nodeOutboundLabel, outboundProtocolName, outboundAddress } from '../outbounds.js';
 import { outboundsPanel } from './outbounds.js';
+import { machineMaintenance, deleteMachine } from './node-maintenance.js';
 
 export async function nodesPage(host, context) {
   const { api, signal, navigate } = context;
@@ -95,13 +96,14 @@ function machineCard(machine, context, reload) {
   const status = !machine.is_active ? ['接入已关闭', 'muted'] : connected ? ['机器在线', 'success'] : [machine.last_seen_at ? '机器离线' : '等待心跳', 'warning'];
   const controls = h('div', { class: 'machine-actions' },
     button('接入命令', { icon: 'terminal', onClick: event => runAction(event.currentTarget, () => machineCredentials(machine, context)) }),
+    button('节点维护', { icon: 'settings', 'aria-label': `节点维护 ${machine.name}`, onClick: () => machineMaintenance(machine, context) }),
     h('div', { class: 'row-actions' },
       iconButton(`编辑 VPS ${machine.name}`, 'edit', () => machineEditor(machine, context, reload)),
       iconButton(`轮换 ${machine.name} 的机器令牌`, 'key', () => openDialog({ title: '轮换机器令牌', content: h('p', { class: 'confirm-copy' }, '原令牌将立即失效。请在 VPS 更新节点服务的认证配置，使其恢复接入。'), submitLabel: '确认轮换', danger: true,
         onSubmit: () => context.api.post('server/machine/resetToken', { id: machine.id }),
         onSuccess: () => { toast('机器令牌已轮换'); machineCredentials(machine, context).catch(error => toast(error.message, 'error')); },
       })),
-      iconButton(`删除 VPS ${machine.name}`, 'trash', () => confirmAction({ title: '删除 VPS 记录', description: `确认删除“${machine.name}”？机器令牌将失效，关联节点会解除机器绑定。此操作不会删除 VPS 本身。`, label: '删除记录', onConfirm: async () => { await context.api.post('server/machine/drop', { id: machine.id }); toast('VPS 记录已删除'); await reload(); } }), 'danger-text')));
+      iconButton(`删除 VPS ${machine.name}`, 'trash', () => deleteMachine(machine, context, reload), 'danger-text')));
   return panel(null, h('div', { class: 'machine-card' },
     h('div', { class: 'machine-heading' }, h('span', { class: 'machine-icon' }, icon('server')), h('div', {}, h('h3', {}, machine.name), h('span', { class: 'muted small' }, `机器 #${machine.id}`)), badge(...status)),
     h('p', { class: 'machine-notes' }, machine.notes || '未添加备注'),

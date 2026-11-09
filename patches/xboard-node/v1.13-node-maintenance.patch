@@ -1,0 +1,155 @@
+diff --git a/cmd/xbctl/main.go b/cmd/xbctl/main.go
+index 4a05d66..5ea11d6 100644
+--- a/cmd/xbctl/main.go
++++ b/cmd/xbctl/main.go
+@@ -1526,9 +1526,9 @@ func writeInstallMetaVersioned(path string, root *config.RootConfig, ver, latest
+ 	return os.WriteFile(path, data, 0o644)
+ }
+ 
+-// runConfigHealthPort reads health_port from an existing config file and
+-// prints it to stdout. Exits silently if the file does not exist or has
+-// no health_port.
++// runConfigHealthPort reports the health listener actually selected by the
++// node process: the first instance, or the legacy top-level configuration.
++// It prints 0 when disabled and fails explicitly on unreadable/invalid YAML.
+ func runConfigHealthPort(args []string) error {
+ 	cfgPath := defaultConfigPath
+ 	for i := 0; i < len(args); i++ {
+@@ -1537,25 +1537,30 @@ func runConfigHealthPort(args []string) error {
+ 			cfgPath = args[i]
+ 		}
+ 	}
++	port, err := configuredHealthPort(cfgPath)
++	if err != nil {
++		return err
++	}
++	fmt.Println(port)
++	return nil
++}
++
++func configuredHealthPort(cfgPath string) (int, error) {
+ 	data, err := os.ReadFile(cfgPath)
+ 	if err != nil {
+-		return nil // file not found → no health port
++		return 0, errors.New("cannot read config for health port")
+ 	}
+ 	root := &config.RootConfig{}
+ 	if err := yaml.Unmarshal(data, root); err != nil {
+-		return nil
++		// Do not include parser diagnostics: YAML errors can contain credentials.
++		return 0, errors.New("invalid YAML config for health port")
+ 	}
+-	// Check instances first, then legacy top-level.
++	port := root.Config.HealthPort
+ 	if len(root.Instances) > 0 {
+-		for _, inst := range root.Instances {
+-			if inst.HealthPort > 0 {
+-				fmt.Println(inst.HealthPort)
+-				return nil
+-			}
+-		}
++		port = root.Instances[0].HealthPort
+ 	}
+-	if root.Config.HealthPort > 0 {
+-		fmt.Println(root.Config.HealthPort)
++	if port < 0 || port > 65535 {
++		return 0, errors.New("health_port must be between 0 and 65535")
+ 	}
+-	return nil
++	return port, nil
+ }
+diff --git a/cmd/xbctl/health_port_test.go b/cmd/xbctl/health_port_test.go
+new file mode 100644
+index 0000000..e58a2bf
+--- /dev/null
++++ b/cmd/xbctl/health_port_test.go
+@@ -0,0 +1,89 @@
++package main
++
++import (
++	"io"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++func TestConfiguredHealthPortMatchesFirstProcessListener(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		yaml string
++		want int
++	}{
++		{"legacy custom", "health_port: 64001\n", 64001},
++		{"legacy disabled", "health_port: 0\n", 0},
++		{"legacy omitted", "kernel:\n  type: singbox\n", 0},
++		{"first instance", "health_port: 64000\ninstances:\n  - health_port: 64001\n  - health_port: 64002\n", 64001},
++		{"first disabled later enabled", "health_port: 64000\ninstances:\n  - health_port: 0\n  - health_port: 64002\n", 0},
++		{"first omitted later enabled", "health_port: 64000\ninstances:\n  - kernel: {type: singbox}\n  - health_port: 64002\n", 0},
++		{"empty instances use legacy", "health_port: 64000\ninstances: []\n", 64000},
++		{"environment credentials not needed", "health_port: 64000\ninstances:\n  - health_port: 64001\n    machine:\n      machine_id: 7\n      token_env: UNSET_MAINTENANCE_TEST_TOKEN\n", 64001},
++		{"valid YAML alias", "health_port: &port 64001\ninstances:\n  - health_port: *port\n", 64001},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			path := filepath.Join(t.TempDir(), "config.yml")
++			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
++				t.Fatal(err)
++			}
++			got, err := configuredHealthPort(path)
++			if err != nil || got != tc.want {
++				t.Fatalf("health port = %d, %v; want %d", got, err, tc.want)
++			}
++		})
++	}
++}
++
++func TestConfiguredHealthPortRejectsUnreadableAndInvalidConfig(t *testing.T) {
++	for _, tc := range []struct{ name, yaml string }{
++		{"negative", "health_port: -1\n"},
++		{"too high", "health_port: 65536\n"},
++		{"invalid first instance", "instances:\n  - health_port: 65536\n"},
++		{"wrong type", "health_port: credential-must-not-leak\n"},
++		{"bad YAML", "health_port: [credential-must-not-leak\n"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			path := filepath.Join(t.TempDir(), "config.yml")
++			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
++				t.Fatal(err)
++			}
++			_, err := configuredHealthPort(path)
++			if err == nil {
++				t.Fatal("expected error")
++			}
++			if strings.Contains(err.Error(), "credential-must-not-leak") {
++				t.Fatal("parser error leaked config value")
++			}
++		})
++	}
++	if _, err := configuredHealthPort(filepath.Join(t.TempDir(), "missing.yml")); err == nil {
++		t.Fatal("missing file must fail")
++	}
++	if _, err := configuredHealthPort(t.TempDir()); err == nil {
++		t.Fatal("unreadable config directory must fail")
++	}
++}
++
++func TestConfigHealthPortPrintsExplicitDisabledValue(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "config.yml")
++	if err := os.WriteFile(path, []byte("instances:\n  - health_port: 0\n  - health_port: 64002\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	read, write, err := os.Pipe()
++	if err != nil {
++		t.Fatal(err)
++	}
++	original := os.Stdout
++	os.Stdout = write
++	t.Cleanup(func() { os.Stdout = original; _ = read.Close(); _ = write.Close() })
++	err = runConfigHealthPort([]string{"--config", path})
++	_ = write.Close()
++	os.Stdout = original
++	output, readErr := io.ReadAll(read)
++	if err != nil || readErr != nil || string(output) != "0\n" {
++		t.Fatalf("output %q, errors %v/%v; want explicit zero", output, err, readErr)
++	}
++}

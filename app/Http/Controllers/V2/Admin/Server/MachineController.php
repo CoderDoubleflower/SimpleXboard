@@ -8,12 +8,18 @@ use App\Models\Server;
 use App\Models\ServerMachine;
 use App\Models\ServerMachineLoadHistory;
 use App\Services\NodeSyncService;
+use App\Services\NodeMaintenanceService;
 use App\Services\OutboundCapabilityService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class MachineController extends Controller
 {
+    public function __construct(private readonly NodeMaintenanceService $maintenance)
+    {
+    }
+
     /**
      * 获取机器列表（附带关联节点数）
      */
@@ -68,18 +74,20 @@ class MachineController extends Controller
             return $this->success(true);
         }
 
-        $machine = ServerMachine::create([
-            'name' => $params['name'],
-            'notes' => $params['notes'] ?? null,
-            'is_active' => $params['is_active'] ?? true,
-            'token' => ServerMachine::generateToken(),
-        ]);
+        return DB::transaction(function () use ($request, $params) {
+            $machine = ServerMachine::create([
+                'name' => $params['name'],
+                'notes' => $params['notes'] ?? null,
+                'is_active' => $params['is_active'] ?? true,
+                'token' => ServerMachine::generateToken(),
+            ]);
 
-        return $this->success([
-            'id' => $machine->id,
-            'token' => $machine->token,
-            'install_command' => $this->buildInstallCommand($request, $machine),
-        ]);
+            return $this->success([
+                'id' => $machine->id,
+                'token' => $machine->token,
+                'install_command' => $this->buildInstallCommand($request, $machine),
+            ])->header('Cache-Control', 'no-store');
+        });
     }
 
     /**
@@ -95,11 +103,11 @@ class MachineController extends Controller
         $token = ServerMachine::generateToken();
         $machine->update(['token' => $token]);
 
-        return $this->success(['token' => $token]);
+        return $this->success(['token' => $token])->header('Cache-Control', 'no-store');
     }
 
     /**
-     * 获取机器 Token（仅展示一次，用于首次配置）
+     * 获取机器 Token（仅管理员可读取）
      */
     public function getToken(Request $request)
     {
@@ -109,7 +117,7 @@ class MachineController extends Controller
 
         $machine = ServerMachine::find($params['id']);
 
-        return $this->success(['token' => $machine->token]);
+        return $this->success(['token' => $machine->token])->header('Cache-Control', 'no-store');
     }
 
     /**
@@ -125,7 +133,18 @@ class MachineController extends Controller
 
         return $this->success([
             'command' => $this->buildInstallCommand($request, $machine),
+        ])->header('Cache-Control', 'no-store');
+    }
+
+    /** Read-only command generation; it does not execute or rotate credentials. */
+    public function maintenanceCommands(Request $request)
+    {
+        $params = $request->validate([
+            'id' => 'required|integer|exists:v2_server_machine,id',
         ]);
+        $machine = ServerMachine::findOrFail($params['id']);
+        return $this->success($this->maintenance->commands($machine, $this->panelUrl($request)))
+            ->header('Cache-Control', 'no-store');
     }
 
     /**
@@ -207,15 +226,11 @@ class MachineController extends Controller
 
     private function buildInstallCommand(Request $request, ServerMachine $machine): string
     {
-        $panelUrl = rtrim((string) (admin_setting('app_url') ?: $request->getSchemeAndHttpHost()), '/');
-        $installerUrl = 'https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh';
+        return $this->maintenance->commands($machine, $this->panelUrl($request))['install_command'];
+    }
 
-        return sprintf(
-            'curl -fsSL %s | sudo bash -s -- --mode machine --panel %s --token %s --machine-id %d',
-            $installerUrl,
-            escapeshellarg($panelUrl),
-            escapeshellarg($machine->token),
-            $machine->id
-        );
+    private function panelUrl(Request $request): string
+    {
+        return rtrim((string) (admin_setting('app_url') ?: $request->getSchemeAndHttpHost()), '/');
     }
 }

@@ -54,6 +54,7 @@ class AdminRoute
             $router->get('server/machine/fetch', [MachineController::class, 'fetch']);
             $router->get('server/machine/getToken', [MachineController::class, 'getToken']);
             $router->get('server/machine/installCommand', [MachineController::class, 'installCommand']);
+            $router->get('server/machine/maintenanceCommands', [MachineController::class, 'maintenanceCommands']);
             $router->get('server/machine/nodes', [MachineController::class, 'nodes']);
             $router->get('server/machine/history', [MachineController::class, 'history']);
             $router->post('server/machine/save', [MachineController::class, 'save']);
