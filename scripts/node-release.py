@@ -37,7 +37,8 @@ def manifest():
 def build_info(data):
     inputs = ["resources/node/release.json", "scripts/node-manager.sh",
               "patches/xboard-node/v1.13-core-lifecycle.patch", "patches/xboard-node/v1.13-managed-outbounds.patch",
-              "patches/xboard-node/v1.13-node-maintenance.patch"]
+              "patches/xboard-node/v1.13-node-maintenance.patch",
+              "patches/xboard-node/v1.13-server-certificates.patch"]
     return {"version": data["version"], "upstream_commit": UPSTREAM,
             "inputs": {name: digest(ROOT / name) for name in inputs}}
 

@@ -49,7 +49,9 @@ class ServerService
         return Server::where('machine_id', $machine->id)
             ->where('enabled', true)
             ->orderBy('sort', 'ASC')
-            ->get();
+            ->get()
+            ->filter(fn (Server $node) => app(ServerCertificateService::class)->errorsForNode($node) === [])
+            ->values();
     }
 
     /**
@@ -64,6 +66,8 @@ class ServerService
             ->where('show', true)
             ->orderBy('sort', 'ASC')
             ->get()
+            ->filter(fn (Server $node) => app(ServerCertificateService::class)->errorsForHealthSource($node) === [])
+            ->values()
             ->append(['last_check_at', 'last_push_at', 'online', 'is_online', 'available_status', 'cache_key', 'server_key']);
 
         $servers = collect($servers)->map(function ($server) use ($user) {
@@ -77,7 +81,7 @@ class ServerService
             }
             $server->password = $server->generateServerPassword($user);
             // Server-side routing credentials have no place in client subscriptions.
-            return $server->makeHidden(['custom_outbounds', 'custom_routes', 'outbound']);
+            return $server->makeHidden(['custom_outbounds', 'custom_routes', 'outbound', 'cert_config', 'parent']);
         })->toArray();
 
         return $servers;
@@ -87,6 +91,7 @@ class ServerService
     public static function getAvailableUsers(Server $node): Collection
     {
         if (!$node->isAvailable()) return collect();
+        if (app(ServerCertificateService::class)->errorsForNode($node) !== []) return collect();
         if ($node->outbound_id && !OutboundCapabilityService::supportsNode($node)) return collect();
         return User::eligible()->authorizedFor($node)
             ->select(['id', 'uuid', 'speed_limit', 'device_limit'])->toBase()->get();
@@ -235,6 +240,7 @@ class ServerService
 
     public static function buildNodeConfig(Server $node): array
     {
+        $certificate = app(ServerCertificateService::class)->validateForNode([], $node);
         $nodeType = $node->type;
         $protocolSettings = $node->protocol_settings;
         $serverPort = $node->server_port;
@@ -366,8 +372,8 @@ class ServerService
             $response['custom_routes'] = $node['custom_routes'];
         }
 
-        if (!empty($node['cert_config'])) {
-            $certConfig = $node['cert_config'];
+        if (!empty($certificate)) {
+            $certConfig = $certificate;
             // Normalize: accept both "mode" and "cert_mode" from the database
             if (isset($certConfig['mode']) && !isset($certConfig['cert_mode'])) {
                 $certConfig['cert_mode'] = $certConfig['mode'];

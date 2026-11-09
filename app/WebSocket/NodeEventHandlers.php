@@ -6,6 +6,7 @@ use App\Models\Server;
 use App\Services\DeviceStateService;
 use App\Services\NodeRegistry;
 use App\Services\NodeHealthService;
+use App\Services\ServerCertificateService;
 use App\Services\ServerService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -127,6 +128,13 @@ class NodeEventHandlers
     public static function pushFullSync(TcpConnection $conn, Server $node): void
     {
         $nodeId = (int) $node->id;
+
+        $errors = app(ServerCertificateService::class)->errorsForNode($node);
+        if ($errors !== []) {
+            NodeRegistry::send($nodeId, 'sync.users', ['users' => []]);
+            NodeRegistry::send($nodeId, 'error', ['message' => collect($errors)->flatten()->first(), 'errors' => $errors]);
+            return;
+        }
 
         // Push config
         $config = ServerService::buildNodeConfig($node);

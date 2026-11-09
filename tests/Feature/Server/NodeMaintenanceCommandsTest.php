@@ -18,7 +18,7 @@ class NodeMaintenanceCommandsTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const SCRIPT_URL = 'https://github.com/CoderDoubleflower/SimpleXboard/releases/download/node-v1.13-simplexboard.2/node-manager.sh';
+    private const SCRIPT_URL = 'https://github.com/CoderDoubleflower/SimpleXboard/releases/download/node-v1.13-simplexboard.3/node-manager.sh';
     private string $temporary;
 
     protected function setUp(): void
@@ -58,7 +58,7 @@ class NodeMaintenanceCommandsTest extends TestCase
         $before = (array) DB::table('v2_server_machine')->where('id', $machine->id)->first();
         $response = $this->getJson($this->base() . '/maintenanceCommands?id=' . $machine->id
             . '&version=latest&repository=other%2Fproject&script_url=https%3A%2F%2Fother.example%2Finstaller.sh')->assertOk();
-        $response->assertJsonPath('data.version', 'v1.13-simplexboard.2')
+        $response->assertJsonPath('data.version', 'v1.13-simplexboard.3')
             ->assertJsonPath('data.platforms', ['linux-amd64', 'linux-arm64']);
         $this->assertNoStore($response);
         $commands = $response->json('data');

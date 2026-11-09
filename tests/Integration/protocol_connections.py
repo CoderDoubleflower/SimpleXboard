@@ -198,6 +198,7 @@ def main():
              "reality_settings": {"server_name": "localhost", "server_port": decoy_port, "allow_insecure": False,
                                   "private_key": pair["private_key"], "public_key": pair["public_key"], "short_id": short_id}}},
         {"type": "hysteria", "name": "Loopback Hysteria2", "host": "127.0.0.1", "port": str(hy2_port), "server_port": hy2_port,
+         "cert_config": {"cert_mode": "file", "cert_file": str(cert), "key_file": str(key)},
          "show": True, "enabled": True, "protocol_settings": {"version": 2,
              "tls": {"server_name": "localhost", "allow_insecure": False}, "bandwidth": {"up": 100, "down": 100},
              "obfs": {"open": True, "type": "salamander", "password": hy2_password}}},
@@ -252,10 +253,13 @@ def main():
                         "handshake": {"server": "127.0.0.1", "server_port": int(settings["server_port"])}}}})
             else:
                 require(backend["version"] == 2, "Node API did not retain Hysteria2 version")
+                certificate = backend["cert_config"]
+                require(certificate["cert_mode"] == "file", "Node API did not retain the server certificate source")
                 inbound.update({"users": [{"name": "test-member", "password": backend_user["uuid"]}],
                     "up_mbps": backend["up_mbps"], "down_mbps": backend["down_mbps"],
                     "obfs": {"type": backend["obfs"], "password": backend["obfs-password"]},
-                    "tls": {"enabled": True, "server_name": backend["server_name"], "certificate_path": str(cert), "key_path": str(key)}})
+                    "tls": {"enabled": True, "server_name": backend["server_name"],
+                            "certificate_path": certificate["cert_file"], "key_path": certificate["key_file"]}})
             server_config = work / (label + "-server.json")
             private_write(server_config, {"log": {"level": "warn"}, "inbounds": [inbound], "outbounds": [{"type": "direct", "tag": "direct"}]})
             with (artifacts / (label + "-server-check.log")).open("wb") as log:

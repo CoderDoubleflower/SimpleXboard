@@ -58,6 +58,14 @@ class NodeHealthService
 
     public static function coreStatus(Server $node): array
     {
+        $errors = app(ServerCertificateService::class)->errorsForHealthSource($node);
+        if ($errors !== []) {
+            return [
+                'state' => 'error', 'ready' => false, 'users' => null,
+                'applied_users' => null, 'error' => collect($errors)->flatten()->first(),
+                'updated_at' => null, 'source' => 'panel_validation',
+            ];
+        }
         $report = Cache::get(self::coreKey($node, $node->healthSourceId()));
         if (!is_array($report)) {
             return [

@@ -31,6 +31,7 @@ class NodeSyncService
         if (!$node)
             return;
 
+        if (self::rejectInvalidCertificate($node)) return;
         self::push($nodeId, 'sync.config', ['config' => ServerService::buildNodeConfig($node)]);
     }
 
@@ -43,6 +44,7 @@ class NodeSyncService
         foreach (Server::all() as $server) {
             if (!self::isNodeOnline($server->id)) continue;
             $allowed = $user->isAvailable() && $server->isAvailable() && $user->canAccessServer($server)
+                && app(ServerCertificateService::class)->errorsForNode($server) === []
                 && (!$server->outbound_id || OutboundCapabilityService::supportsNode($server));
             if (!$allowed || $revokeExisting) self::removeUserFromNode($server->id, $user->id);
             if ($allowed) {
@@ -81,10 +83,21 @@ class NodeSyncService
         if (!$node)
             return;
 
+        if (self::rejectInvalidCertificate($node)) return;
         self::push($nodeId, 'sync.config', ['config' => ServerService::buildNodeConfig($node)]);
 
         $users = ServerService::getAvailableUsers($node)->toArray();
         self::push($nodeId, 'sync.users', ['users' => $users]);
+    }
+
+    private static function rejectInvalidCertificate(Server $node): bool
+    {
+        $errors = app(ServerCertificateService::class)->errorsForNode($node);
+        if ($errors === []) return false;
+        // Withdraw old credentials without publishing an unusable config.
+        self::push($node->id, 'sync.users', ['users' => []]);
+        self::push($node->id, 'error', ['message' => collect($errors)->flatten()->first(), 'errors' => $errors]);
+        return true;
     }
 
     /**

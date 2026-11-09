@@ -45,7 +45,7 @@ class RequestLog
     private function redact(array $data): array
     {
         foreach ($data as $key => $value) {
-            if (preg_match('/password|passwd|token|secret|key|authorization|auth_data|uuid|^uri$|^settings$|^custom_outbounds$/i', (string) $key)) {
+            if (preg_match('/password|passwd|token|secret|key|authorization|auth_data|uuid|^uri$|^settings$|^custom_outbounds$|^cert_config$/i', (string) $key)) {
                 $data[$key] = '[redacted]';
             } elseif (is_array($value)) {
                 $data[$key] = $this->redact($value);

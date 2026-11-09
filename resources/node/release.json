@@ -1,6 +1,6 @@
 {
-  "version": "v1.13-simplexboard.2",
-  "tag": "node-v1.13-simplexboard.2",
+  "version": "v1.13-simplexboard.3",
+  "tag": "node-v1.13-simplexboard.3",
   "repository": "CoderDoubleflower/SimpleXboard",
   "script": "node-manager.sh",
   "platforms": ["linux-amd64", "linux-arm64"]

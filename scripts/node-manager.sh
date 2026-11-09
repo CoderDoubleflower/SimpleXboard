@@ -5,9 +5,9 @@ set -Eeuo pipefail
 umask 077
 export PATH='/usr/sbin:/usr/bin:/sbin:/bin'
 
-readonly VERSION='v1.13-simplexboard.2'
-readonly RELEASE_TAG='node-v1.13-simplexboard.2'
-readonly RELEASE_BASE='https://github.com/CoderDoubleflower/SimpleXboard/releases/download/node-v1.13-simplexboard.2'
+readonly VERSION='v1.13-simplexboard.3'
+readonly RELEASE_TAG='node-v1.13-simplexboard.3'
+readonly RELEASE_BASE='https://github.com/CoderDoubleflower/SimpleXboard/releases/download/node-v1.13-simplexboard.3'
 readonly NODE_BINARY='/usr/local/bin/xboard-node'
 readonly CLI_BINARY='/usr/local/bin/xbctl'
 readonly CLI_LINK='/usr/bin/xbctl'
