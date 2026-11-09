@@ -283,6 +283,10 @@ tbody tr:hover { background: var(--surface-soft); }
 .machine-facts dt { color: var(--muted); font-size: 12px; }
 .machine-facts dd { color: var(--text); font-size: 15px; font-weight: 600; margin-top: 6px; }
 .machine-actions { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.maintenance-tabs .tabs { width: 100%; margin-bottom: 0; flex-wrap: nowrap; }
+.maintenance-tabs .tab { flex: 1; min-width: 0; padding-inline: 10px; white-space: nowrap; }
+.maintenance-command, .maintenance-detail { min-width: 0; overflow-wrap: anywhere; }
+.maintenance-heading { font-size: 16px; font-weight: 600; }
 
 /* Forms: clear labels, generous inputs, explicit feedback. */
 .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px 24px; }

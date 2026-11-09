@@ -15,8 +15,21 @@ concurrency:
 
 jobs:
   node-core:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
+    name: node-core (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            mihomo_asset: mihomo-linux-amd64-compatible-v1.19.29.gz
+            mihomo_sha256: 5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            mihomo_asset: mihomo-linux-arm64-v1.19.29.gz
+            mihomo_sha256: 9a868b5e4e0ad91d9d71e1b41b0cfce78aaba44360c30df74a723f8e3926a86c
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     env:
       NODE_BUILD_TAGS: with_quic,with_utls,with_wireguard,with_acme,with_clash_api
     steps:
@@ -41,13 +54,16 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install the isolated panel and exact client version
+        env:
+          MIHOMO_ASSET: ${{ matrix.mihomo_asset }}
+          MIHOMO_SHA256: ${{ matrix.mihomo_sha256 }}
         run: |
           composer install --prefer-dist --no-interaction --no-scripts
           python -m pip install websockets==16.0
           sudo apt-get update
-          sudo apt-get install -y redis-server curl openssl
-          curl --fail --location --retry 3 -o "$RUNNER_TEMP/mihomo.gz" https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-linux-amd64-compatible-v1.19.29.gz
-          echo "5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094  $RUNNER_TEMP/mihomo.gz" | sha256sum --check
+          sudo apt-get install -y redis-server curl openssl util-linux
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/mihomo.gz" "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/$MIHOMO_ASSET"
+          echo "$MIHOMO_SHA256  $RUNNER_TEMP/mihomo.gz" | sha256sum --check
           gzip --decompress --stdout "$RUNNER_TEMP/mihomo.gz" > "$RUNNER_TEMP/mihomo"
           chmod +x "$RUNNER_TEMP/mihomo"
       - name: Build the unmodified v1.13 reproducer
@@ -64,6 +80,8 @@ jobs:
           git apply ../patches/xboard-node/v1.13-core-lifecycle.patch
           git apply --check ../patches/xboard-node/v1.13-managed-outbounds.patch
           git apply ../patches/xboard-node/v1.13-managed-outbounds.patch
+          git apply --check ../patches/xboard-node/v1.13-node-maintenance.patch
+          git apply ../patches/xboard-node/v1.13-node-maintenance.patch
       - name: Run node regression tests
         working-directory: .node-source
         run: go test -p 2 -tags "$NODE_BUILD_TAGS" ./...
@@ -75,6 +93,7 @@ jobs:
         run: |
           CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags "-s -w -X main.version=v1.13-simplexboard.2 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/xboard-node" ./cmd/xboard-node
           CGO_ENABLED=0 go build -trimpath -tags "$NODE_BUILD_TAGS" -o "$RUNNER_TEMP/singbox-fixture" ../tests/Support/singbox-fixture.go
+          CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags '-s -w' -o "$RUNNER_TEMP/xbctl" ./cmd/xbctl
       - name: Verify machine lifecycle through real REALITY and mihomo traffic
         timeout-minutes: 8
         run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-fixed -- python tests/Integration/node_core_lifecycle.py --xboard-node "$RUNNER_TEMP/xboard-node" --mihomo "$RUNNER_TEMP/mihomo"
@@ -84,22 +103,55 @@ jobs:
           sudo ip address add 198.51.100.10/32 dev lo
           trap 'sudo ip address del 198.51.100.10/32 dev lo' EXIT
           python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-outbound -- python tests/Integration/outbound_connections.py --xboard-node "$RUNNER_TEMP/xboard-node" --kernel-fixture "$RUNNER_TEMP/singbox-fixture" --mihomo "$RUNNER_TEMP/mihomo"
+      - name: Verify node maintenance failure handling
+        run: python tests/Integration/node_maintenance.py
+      - name: Stage the verified native release
+        env:
+          NODE_ARCH: ${{ matrix.arch }}
+        run: python scripts/node-release.py stage --arch "$NODE_ARCH" --node-source .node-source --binary "$RUNNER_TEMP/xboard-node" --xbctl "$RUNNER_TEMP/xbctl" --output "$RUNNER_TEMP/node-release"
+      - name: Exercise real systemd install, upgrade, rollback and uninstall
+        timeout-minutes: 8
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-maintenance -- python tests/Integration/node_maintenance_systemd.py --release-dir "$RUNNER_TEMP/node-release" --original-node "$RUNNER_TEMP/xboard-node-original" --allow-disposable-systemd-install
       - name: Checksum the verified binary
         working-directory: ${{ runner.temp }}
         run: sha256sum xboard-node > xboard-node.sha256
-      - name: Save the verified Linux amd64 binary
+      - name: Save the verified native binary
         uses: actions/upload-artifact@v4
         with:
-          name: xboard-node-v1.13-simplexboard.2-linux-amd64
+          name: xboard-node-v1.13-simplexboard.2-linux-${{ matrix.arch }}
           path: |
             ${{ runner.temp }}/xboard-node
             ${{ runner.temp }}/xboard-node.sha256
+          retention-days: 14
+      - name: Save release assets after all native validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-release-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/node-release/
           retention-days: 14
       - name: Save lifecycle evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: node-core-evidence
+          name: node-core-evidence-linux-${{ matrix.arch }}
           path: storage/framework/testing/node-core-*/
           if-no-files-found: ignore
           retention-days: 14
+
+  publish-node:
+    name: Publish verified node release
+    needs: node-core
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'CoderDoubleflower/SimpleXboard'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-release-linux-*
+          path: node-release-artifacts
+      - name: Publish immutable downloads for panel maintenance commands
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/node-release.py publish --input node-release-artifacts
