@@ -1,4 +1,5 @@
 import { hasCustomRouting } from './outbounds.js';
+import { certificateFromForm, validateCertificate } from './certificates.js';
 
 const GIB = 1073741824;
 export const PATH_PATTERN = '[A-Za-z0-9_\\-]+';
@@ -89,6 +90,16 @@ export function nodePayload(values, current = null) {
   for (const key of ['route_ids', 'excludes', 'ips', 'parent_id', 'spectific_key', 'custom_routes', 'custom_outbounds', 'cert_config']) {
     if (Object.hasOwn(advanced, key)) retained[key] = advanced[key];
     else if (current && Object.hasOwn(current, key)) retained[key] = current[key];
+  }
+  if (type === 'hysteria') {
+    if (Object.hasOwn(values, 'cert_mode')) {
+      if (Object.hasOwn(advanced, 'cert_config')) {
+        const error = new Error('请在“服务端 TLS 证书”中配置证书，并移除高级 JSON 中重复的 cert_config，避免两个来源互相覆盖。');
+        error.field = 'advanced_json';
+        throw error;
+      }
+      retained.cert_config = certificateFromForm(values, current?.cert_config);
+    } else retained.cert_config = validateCertificate(retained.cert_config);
   }
   const outboundId = optionalNumber(Object.hasOwn(values, 'outbound_id') ? values.outbound_id : current?.outbound_id, '出站节点', { min: 1 });
   if (outboundId !== null && hasCustomRouting(retained)) {

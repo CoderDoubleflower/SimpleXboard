@@ -59,12 +59,12 @@ def main():
         page.on('console', console)
         page.on('response', response_received)
 
-        def screenshot(name):
+        def screenshot(name, mask=None):
             target = artifacts / (name + '.png')
             if name != 'failure':
                 expect(page.locator('#page-content .loading-state')).to_have_count(0)
                 expect(page.locator('.toast')).to_have_count(0, timeout=10000)
-            page.screenshot(path=str(target), full_page=True)
+            page.screenshot(path=str(target), full_page=True, mask=mask or [])
             result['screenshots'].append(str(target))
 
         def login(current_password=password):
@@ -115,6 +115,127 @@ def main():
         def table_row(name):
             return page.locator('tbody tr').filter(has=page.get_by_text(name, exact=True))
 
+        def certificate_form_checks():
+            nonlocal expected_network_error
+            name = prefix + ' · 证书校验'
+            saves = []
+
+            def track_save(request):
+                if request.method == 'POST' and urlsplit(request.url).path.endswith('/server/manage/save'):
+                    saves.append(request.url)
+
+            def edit():
+                expect(page.locator('#page-content .loading-state')).to_have_count(0)
+                page.get_by_role('button', name='编辑节点 ' + name, exact=True).click()
+                return dialog('编辑节点')
+
+            def stored():
+                return next(node for node in api('server/manage/getNodes') if node['name'] == name)
+
+            def field(form, name):
+                return form.locator('[name="' + name + '"]')
+
+            page.on('request', track_save)
+            page.get_by_role('button', name='添加节点', exact=True).first.click()
+            form = dialog('添加节点')
+            field(form, 'type').select_option('hysteria')
+            field(form, 'name').fill(name)
+            field(form, 'host').fill('hy.example.test')
+            field(form, 'port').fill('24445')
+            field(form, 'server_port').fill('24445')
+            field(form, 'tls_server_name').fill('hy.example.test')
+            field(form, 'tls_insecure').check()
+            form.get_by_role('button', name='创建节点', exact=True).click()
+            expect(field(form, 'cert_mode')).to_be_focused()
+            expect(field(form, 'cert_mode')).to_have_attribute('aria-invalid', 'true')
+            assert not saves, 'SNI and insecure mode bypassed the missing server certificate source'
+            passed('Hysteria 开启跳过验证仍必须选择服务端证书，未发保存请求')
+
+            field(form, 'cert_mode').select_option('file')
+            field(form, 'cert_file').fill('/etc/xboard-node/certs/e2e-cert.pem')
+            form.get_by_role('button', name='创建节点', exact=True).click()
+            expect(field(form, 'cert_key_file')).to_be_focused()
+            expect(field(form, 'cert_key_file')).to_have_attribute('aria-invalid', 'true')
+            expect(form.locator('#error-cert_key_file')).to_contain_text('私钥文件路径')
+            assert not saves, 'A certificate file without a private key reached the API'
+            field(form, 'cert_key_file').fill('/etc/xboard-node/certs/e2e-key.pem')
+            action('server/manage/save', lambda: form.get_by_role('button', name='创建节点', exact=True).click())
+            expect(page.locator('dialog[open]')).to_have_count(0)
+            assert stored()['cert_config'] == {'cert_mode': 'file', 'cert_file': '/etc/xboard-node/certs/e2e-cert.pem', 'key_file': '/etc/xboard-node/certs/e2e-key.pem'}
+            form = edit()
+            expect(field(form, 'cert_mode')).to_have_value('file')
+            expect(field(form, 'cert_file')).to_have_value('/etc/xboard-node/certs/e2e-cert.pem')
+            expect(field(form, 'cert_key_file')).to_have_value('/etc/xboard-node/certs/e2e-key.pem')
+            assert 'cert_config' not in json.loads(field(form, 'advanced_json').input_value()), 'Certificate appeared in two editable sources'
+            field(form, 'cert_mode').scroll_into_view_if_needed()
+            screenshot('03-certificates-file-desktop')
+            passed('文件证书缺私钥时定位字段，补全后持久化并正确回填编辑器')
+
+            field(form, 'cert_mode').select_option('content')
+            # Complete PEM boundaries pass the browser check; the real API must reject invalid DER.
+            field(form, 'cert_content').fill('-----BEGIN CERTIFICATE-----\nY2VydA==\n-----END CERTIFICATE-----')
+            field(form, 'cert_key_content').fill('-----BEGIN PRIVATE KEY-----\na2V5\n-----END PRIVATE KEY-----')
+            expected_network_error = True
+            try:
+                with page.expect_response(lambda response: response.request.method == 'POST' and urlsplit(response.url).path.endswith('/server/manage/save')) as waiting:
+                    form.get_by_role('button', name='保存节点', exact=True).click()
+                assert waiting.value.status == 422, 'Malformed PEM was not rejected by the real certificate validator'
+                expect(field(form, 'cert_content')).to_have_attribute('aria-invalid', 'true')
+                expect(field(form, 'cert_content')).to_be_focused()
+                expect(form.locator('#error-cert_content')).to_contain_text('证书')
+                assert stored()['cert_config']['cert_mode'] == 'file', 'Rejected PEM changed the saved certificate'
+            finally:
+                expected_network_error = False
+            passed('PEM 内容由真实后端解析，失败保留旧配置并映射到证书字段')
+
+            field(form, 'cert_mode').select_option('dns')
+            field(form, 'cert_domain').fill('hy.example.test')
+            field(form, 'cert_dns_provider').select_option('cloudflare')
+            field(form, 'cert_dns_env').fill('{}')
+            before = len(saves)
+            form.get_by_role('button', name='保存节点', exact=True).click()
+            expect(field(form, 'cert_dns_env')).to_be_focused()
+            expect(form.locator('#error-cert_dns_env')).to_contain_text('CLOUDFLARE_DNS_API_TOKEN')
+            assert len(saves) == before, 'Missing DNS API token was submitted'
+            field(form, 'cert_dns_env').fill('{"CF_API_TOKEN":"e2e-placeholder-token"}')
+            action('server/manage/save', lambda: form.get_by_role('button', name='保存节点', exact=True).click())
+            expect(page.locator('dialog[open]')).to_have_count(0)
+            assert stored()['cert_config']['dns_env']['CF_API_TOKEN'] == 'e2e-placeholder-token'
+            form = edit()
+            expect(field(form, 'cert_dns_provider')).to_have_value('cloudflare')
+            assert json.loads(field(form, 'cert_dns_env').input_value()) == {'CF_API_TOKEN': 'e2e-placeholder-token'}
+            field(form, 'cert_dns_provider').select_option('route53')
+            field(form, 'cert_dns_env').fill('{}')
+            action('server/manage/save', lambda: form.get_by_role('button', name='保存节点', exact=True).click())
+            expect(page.locator('dialog[open]')).to_have_count(0)
+            assert stored()['cert_config']['dns_provider'] == 'route53'
+            assert not stored()['cert_config'].get('dns_env'), 'Route 53 retained the previous provider token'
+            passed('DNS 缺 token 时阻止保存、凭据别名回填、Route 53 空凭据环境身份配置')
+
+            form = edit()
+            page.set_viewport_size({'width': 390, 'height': 844})
+            for mode in ['file', 'content', 'http', 'self', 'dns']:
+                field(form, 'cert_mode').select_option(mode)
+                field(form, 'cert_mode').scroll_into_view_if_needed()
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), 'Certificate page overflow: ' + mode
+                assert form.evaluate('(el) => el.scrollWidth <= el.clientWidth + 1'), 'Certificate dialog overflow: ' + mode
+                expect(form.get_by_role('button', name='保存节点', exact=True)).to_be_in_viewport()
+                if mode == 'http':
+                    expect(field(form, 'cert_domain')).to_have_attribute('required', '')
+                    expect(field(form, 'cert_http_port')).to_be_visible()
+                if mode == 'self':
+                    assert not field(form, 'cert_domain').evaluate('(input) => input.required')
+            expect(field(form, 'cert_dns_provider')).to_have_value('route53')
+            screenshot('03-certificates-dns-mobile', mask=[field(form, 'cert_dns_env'), field(form, 'cert_key_content')])
+            page.keyboard.press('Escape')
+            expect(page.locator('dialog[open]')).to_have_count(0)
+            page.set_viewport_size({'width': 1440, 'height': 1000})
+            page.remove_listener('request', track_save)
+            page.get_by_role('button', name='删除节点 ' + name, exact=True).click()
+            action('server/manage/drop', lambda: dialog('删除节点').get_by_role('button', name='删除节点', exact=True).click())
+            expect(page.get_by_text(name, exact=True)).to_have_count(0)
+            passed('390px 五种证书来源无横向溢出、字段按模式切换且保存按钮可达')
+
         try:
             page.goto(base + '/' + admin_path)
             expect(page.get_by_role('heading', name='登录管理台', exact=True)).to_be_visible()
@@ -127,6 +248,7 @@ def main():
             passed('管理员登录、五个一级菜单、真实概览')
 
             nav('VPS 与节点')
+            certificate_form_checks()
             page.get_by_role('button', name='添加 VPS', exact=True).first.click()
             form = dialog('添加 VPS')
             machine_name = prefix + ' · 东京 VPS'
@@ -180,6 +302,8 @@ def main():
                 else:
                     form.locator('[name="rate"]').fill('2')
                     form.locator('[name="tls_server_name"]').fill('hy.example.test')
+                    form.locator('[name="cert_mode"]').select_option('self')
+                    form.locator('[name="cert_domain"]').fill('hy.example.test')
                     form.get_by_label('启用 Salamander 混淆', exact=True).check()
                     form.get_by_label('混淆密码', exact=True).fill('test-obfs-private-key')
                 action('server/manage/save', lambda: form.get_by_role('button', name='创建节点', exact=True).click())

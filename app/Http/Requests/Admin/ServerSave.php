@@ -4,6 +4,7 @@
 namespace App\Http\Requests\Admin;
 
 use App\Models\Server;
+use App\Services\ServerCertificateService;
 use App\Services\ServerOutboundService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\ValidationException;
@@ -282,6 +283,7 @@ class ServerSave extends FormRequest
             if ($validator->errors()->isNotEmpty()) return;
             $current = $this->input('id') ? Server::find($this->input('id')) : null;
             try {
+                app(ServerCertificateService::class)->validateForNode($this->all(), $current);
                 app(ServerOutboundService::class)->assertSelection($this->all(), $current);
             } catch (ValidationException $e) {
                 foreach ($e->errors() as $key => $messages) {

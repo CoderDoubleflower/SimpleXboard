@@ -45,6 +45,7 @@ $nodes[] = Server::create([
 $nodes[] = Server::create([
     'name' => '测试 Hysteria2', 'type' => 'hysteria', 'host' => '127.0.0.1', 'port' => '24444', 'server_port' => 24444,
     'enabled' => true, 'show' => true, 'sort' => 2,
+    'cert_config' => ['cert_mode' => 'self', 'domain' => 'localhost'],
     'protocol_settings' => ['version' => 2, 'tls' => ['server_name' => 'localhost', 'allow_insecure' => true],
         'bandwidth' => ['up' => 100, 'down' => 100], 'obfs' => ['open' => true, 'type' => 'salamander', 'password' => bin2hex(random_bytes(12))]],
 ]);

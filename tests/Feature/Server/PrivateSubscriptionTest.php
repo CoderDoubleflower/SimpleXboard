@@ -45,6 +45,7 @@ class PrivateSubscriptionTest extends TestCase
         ]);
         $this->hysteria = Server::create($base + [
             'name' => 'Hysteria2 node', 'type' => Server::TYPE_HYSTERIA,
+            'cert_config' => ['cert_mode' => 'file', 'cert_file' => '/etc/xboard-node/fullchain.pem', 'key_file' => '/etc/xboard-node/private.pem'],
             'protocol_settings' => [
                 'version' => 2,
                 'tls' => ['server_name' => 'hy.example.com', 'allow_insecure' => false],

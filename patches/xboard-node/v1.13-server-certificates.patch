@@ -1,0 +1,781 @@
+diff --git a/internal/cert/cert.go b/internal/cert/cert.go
+index 0ab3c3d..0e26e0c 100644
+--- a/internal/cert/cert.go
++++ b/internal/cert/cert.go
+@@ -10,6 +10,7 @@ import (
+ 	"crypto/x509"
+ 	"crypto/x509/pkix"
+ 	"encoding/hex"
++	"encoding/json"
+ 	"encoding/pem"
+ 	"fmt"
+ 	"math/big"
+@@ -67,6 +68,15 @@ type certMaterial struct {
+ 	keyPEM  []byte
+ }
+ 
++// persistedCertMetadata identifies the source of the shared PEM cache. The
++// certificate digest prevents a partial write from attaching stale provenance
++// to newer material.
++type persistedCertMetadata struct {
++	Mode              string `json:"mode"`
++	Domain            string `json:"domain,omitempty"`
++	CertificateSHA256 string `json:"certificate_sha256"`
++}
++
+ // NewManager creates a certificate manager.
+ func NewManager(cfg config.CertConfig) *Manager {
+ 	return &Manager{cfg: cfg}
+@@ -94,9 +104,20 @@ func (m *Manager) persistPEM(cert, key []byte) {
+ 	keyPath := filepath.Join(dir, "key.pem")
+ 	if err := atomicWriteFile(certPath, cert, 0o644); err != nil {
+ 		nlog.Core().Warn("cert: failed to persist cert", "path", certPath, "error", err)
++		return
+ 	}
+ 	if err := atomicWriteFile(keyPath, key, 0o600); err != nil {
+ 		nlog.Core().Warn("cert: failed to persist key", "path", keyPath, "error", err)
++		return
++	}
++	sum := sha256.Sum256(cert)
++	metadata := persistedCertMetadata{Mode: m.resolveMode(), CertificateSHA256: hex.EncodeToString(sum[:])}
++	if metadata.Mode == "self" {
++		metadata.Domain = selfSignedDomain(m.cfg.Domain)
++	}
++	data, _ := json.Marshal(metadata)
++	if err := atomicWriteFile(filepath.Join(dir, "certificate.json"), data, 0600); err != nil {
++		nlog.Core().Warn("cert: failed to persist source metadata", "error", err)
+ 	}
+ }
+ 
+@@ -128,12 +149,51 @@ func (m *Manager) loadPersistedPEM() bool {
+ 		nlog.Core().Warn("cert: persisted cert invalid, will regenerate", "error", err)
+ 		return false
+ 	}
++	if m.resolveMode() == "self" && !m.matchesPersistedSelfSigned(certPEM) {
++		return false
++	}
+ 	// Store in memory only (don't re-persist what we just read).
+ 	m.mat.Store(&certMaterial{certPEM: certPEM, keyPEM: keyPEM})
+ 	nlog.Core().Info("cert: loaded persisted certificate from disk", "dir", dir)
+ 	return true
+ }
+ 
++func selfSignedDomain(domain string) string {
++	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
++	if domain == "" {
++		return "localhost"
++	}
++	return domain
++}
++
++// Only a still-valid self-generated certificate for this domain may be reused.
++// Old caches without source metadata are regenerated once rather than guessing
++// whether a file/content/ACME certificate belongs to the new self configuration.
++func (m *Manager) matchesPersistedSelfSigned(certPEM []byte) bool {
++	data, err := os.ReadFile(filepath.Join(m.cfg.CertDir, "certificate.json"))
++	if err != nil {
++		return false
++	}
++	var metadata persistedCertMetadata
++	if json.Unmarshal(data, &metadata) != nil || metadata.Mode != "self" || metadata.Domain != selfSignedDomain(m.cfg.Domain) {
++		return false
++	}
++	sum := sha256.Sum256(certPEM)
++	if metadata.CertificateSHA256 != hex.EncodeToString(sum[:]) {
++		return false
++	}
++	block, _ := pem.Decode(certPEM)
++	if block == nil {
++		return false
++	}
++	leaf, err := x509.ParseCertificate(block.Bytes)
++	if err != nil {
++		return false
++	}
++	now := time.Now()
++	return !now.Before(leaf.NotBefore) && now.Before(leaf.NotAfter) && leaf.VerifyHostname(metadata.Domain) == nil
++}
++
+ // Reconfigure applies a new cert configuration at runtime (e.g. from panel push).
+ // Returns true when the PEM material changed (caller should restart kernel).
+ func (m *Manager) Reconfigure(ctx context.Context, newCfg config.CertConfig) (bool, error) {
+@@ -190,6 +250,7 @@ func acmeFingerprint(cfg config.CertConfig) string {
+ 	b.WriteByte('|')
+ 	b.WriteString(strings.TrimSpace(cfg.Email))
+ 	b.WriteByte('|')
++	fmt.Fprintf(&b, "%d|", cfg.HTTPPort)
+ 	b.WriteString(strings.TrimSpace(cfg.DNSProvider))
+ 	b.WriteByte('|')
+ 	for _, k := range keys {
+@@ -268,6 +329,8 @@ func (m *Manager) Start(ctx context.Context) error {
+ 
+ 	switch mode {
+ 	case "none", "":
++		// Explicitly disabling TLS must not leave a previous certificate usable.
++		m.mat.Store(nil)
+ 		return nil
+ 	case "file":
+ 		return m.startFile()
+@@ -319,10 +382,7 @@ func (m *Manager) startSelfSigned() error {
+ 		return nil
+ 	}
+ 
+-	domain := m.cfg.Domain
+-	if domain == "" {
+-		domain = "localhost"
+-	}
++	domain := selfSignedDomain(m.cfg.Domain)
+ 
+ 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+ 	if err != nil {
+diff --git a/internal/cert/cert_test.go b/internal/cert/cert_test.go
+index 68bc5bc..d3a42ba 100644
+--- a/internal/cert/cert_test.go
++++ b/internal/cert/cert_test.go
+@@ -194,6 +194,7 @@ func TestACMEFingerprint(t *testing.T) {
+ 		{"domain", func(c *config.CertConfig) { c.Domain = "b.example.com" }, true},
+ 		{"mode", func(c *config.CertConfig) { c.CertMode = "http" }, true},
+ 		{"email", func(c *config.CertConfig) { c.Email = "other@example.com" }, true},
++		{"http_port", func(c *config.CertConfig) { c.HTTPPort = 8080 }, true},
+ 		{"provider", func(c *config.CertConfig) { c.DNSProvider = "alidns" }, true},
+ 		{"env_value", func(c *config.CertConfig) { c.DNSEnv = map[string]string{"CLOUDFLARE_API_TOKEN": "other"} }, true},
+ 		{"env_key_only", func(c *config.CertConfig) { c.DNSEnv = map[string]string{"OTHER": "tok"} }, true},
+diff --git a/internal/cert/self_cache_test.go b/internal/cert/self_cache_test.go
+new file mode 100644
+index 0000000..c9bc8bc
+--- /dev/null
++++ b/internal/cert/self_cache_test.go
+@@ -0,0 +1,145 @@
++package cert
++
++import (
++	"context"
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/sha256"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"encoding/hex"
++	"encoding/json"
++	"encoding/pem"
++	"math/big"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"github.com/cedar2025/xboard-node/internal/config"
++)
++
++func requireSelfDomain(t *testing.T, m *Manager, domain string) {
++	t.Helper()
++	block, _ := pem.Decode(m.TLSCert().CertPEM)
++	if block == nil {
++		t.Fatal("missing certificate PEM")
++	}
++	leaf, err := x509.ParseCertificate(block.Bytes)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := leaf.VerifyHostname(domain); err != nil {
++		t.Fatal(err)
++	}
++	if time.Now().Before(leaf.NotBefore) || !time.Now().Before(leaf.NotAfter) {
++		t.Fatal("self certificate is outside its validity period")
++	}
++}
++
++func TestSelfCertificateDoesNotReuseAnotherSource(t *testing.T) {
++	for _, mode := range []string{"file", "content"} {
++		for _, domain := range []string{"old.example.test", "new.example.test"} {
++			t.Run(mode+"/"+domain, func(t *testing.T) {
++				certPEM, keyPEM := generateSelfSignedPair(t, "old.example.test")
++				dir := t.TempDir()
++				certPath, keyPath := filepath.Join(dir, "provided.pem"), filepath.Join(dir, "provided-key.pem")
++				if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
++					t.Fatal(err)
++				}
++				if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
++					t.Fatal(err)
++				}
++				m := NewManager(config.CertConfig{CertMode: mode, CertDir: dir, CertFile: certPath, KeyFile: keyPath,
++					CertContent: string(certPEM), KeyContent: string(keyPEM)})
++				if err := m.Start(context.Background()); err != nil {
++					t.Fatal(err)
++				}
++				changed, err := m.Reconfigure(context.Background(), config.CertConfig{CertMode: "self", Domain: domain})
++				if err != nil || !changed || string(m.TLSCert().CertPEM) == string(certPEM) {
++					t.Fatalf("self reused %s material: changed=%v err=%v", mode, changed, err)
++				}
++				requireSelfDomain(t, m, domain)
++			})
++		}
++	}
++}
++
++func TestSelfCertificateStableRestartAndDomainChange(t *testing.T) {
++	cfg := config.CertConfig{CertMode: "self", CertDir: t.TempDir(), Domain: "a.example.test"}
++	m := NewManager(cfg)
++	if err := m.Start(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	initial := m.TLSCert()
++	changed, err := m.Reconfigure(context.Background(), cfg)
++	if err != nil || changed || !pemEqual(initial, m.TLSCert()) {
++		t.Fatalf("unchanged self source rotated certificate: changed=%v err=%v", changed, err)
++	}
++	warm := NewManager(cfg)
++	if err := warm.Start(context.Background()); err != nil || !pemEqual(initial, warm.TLSCert()) {
++		t.Fatalf("warm restart did not retain matching self certificate: %v", err)
++	}
++	cfg.Domain = "b.example.test"
++	changed, err = warm.Reconfigure(context.Background(), cfg)
++	if err != nil || !changed || pemEqual(initial, warm.TLSCert()) {
++		t.Fatalf("domain change reused old material: changed=%v err=%v", changed, err)
++	}
++	requireSelfDomain(t, warm, cfg.Domain)
++}
++
++func TestSelfCertificateRejectsStaleCacheMetadataAndExpiredMaterial(t *testing.T) {
++	for _, condition := range []string{"legacy", "hash_mismatch", "hostname_mismatch", "expired"} {
++		t.Run(condition, func(t *testing.T) {
++			const domain = "new.example.test"
++			cfg := config.CertConfig{CertMode: "self", CertDir: t.TempDir(), Domain: domain}
++			certDomain := domain
++			if condition == "hostname_mismatch" {
++				certDomain = "wrong.example.test"
++			}
++			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++			if err != nil {
++				t.Fatal(err)
++			}
++			ends := time.Now().Add(time.Hour)
++			if condition == "expired" {
++				ends = time.Now().Add(-time.Hour)
++			}
++			tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: certDomain},
++				DNSNames: []string{certDomain}, NotBefore: time.Now().Add(-24 * time.Hour), NotAfter: ends,
++				KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
++			der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
++			if err != nil {
++				t.Fatal(err)
++			}
++			keyDER, err := x509.MarshalECPrivateKey(key)
++			if err != nil {
++				t.Fatal(err)
++			}
++			old := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
++			m := NewManager(cfg)
++			m.storePEM(old, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
++			metadataPath := filepath.Join(cfg.CertDir, "certificate.json")
++			if condition == "legacy" {
++				if err := os.Remove(metadataPath); err != nil {
++					t.Fatal(err)
++				}
++			} else if condition == "hash_mismatch" {
++				sum := sha256.Sum256([]byte("different certificate"))
++				data, _ := json.Marshal(persistedCertMetadata{Mode: "self", Domain: domain, CertificateSHA256: hex.EncodeToString(sum[:])})
++				if err := os.WriteFile(metadataPath, data, 0600); err != nil {
++					t.Fatal(err)
++				}
++			}
++			warm := NewManager(cfg)
++			if err := warm.Start(context.Background()); err != nil {
++				t.Fatal(err)
++			}
++			if string(warm.TLSCert().CertPEM) == string(old) {
++				t.Fatal("unusable cache was reused")
++			}
++			requireSelfDomain(t, warm, domain)
++		})
++	}
++}
+diff --git a/internal/service/certificate_lifecycle_test.go b/internal/service/certificate_lifecycle_test.go
+new file mode 100644
+index 0000000..798cf49
+--- /dev/null
++++ b/internal/service/certificate_lifecycle_test.go
+@@ -0,0 +1,142 @@
++package service
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/cedar2025/xboard-node/internal/cert"
++	"github.com/cedar2025/xboard-node/internal/config"
++	"github.com/cedar2025/xboard-node/internal/controlplane"
++	"github.com/cedar2025/xboard-node/internal/model"
++)
++
++type certificateKernel struct{ fakeKernel }
++
++func (k *certificateKernel) Protocols() []string { return []string{"hysteria"} }
++
++func certificatePair(t *testing.T) (string, string) {
++	t.Helper()
++	manager := cert.NewManager(config.CertConfig{CertMode: "self", Domain: "localhost"})
++	if err := manager.Start(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	pair := manager.TLSCert()
++	dir := t.TempDir()
++	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
++	if err := os.WriteFile(certPath, pair.CertPEM, 0600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(keyPath, pair.KeyPEM, 0600); err != nil {
++		t.Fatal(err)
++	}
++	return certPath, keyPath
++}
++
++func newCertificateService() (*Service, *certificateKernel) {
++	k := &certificateKernel{}
++	s := newTestService(&k.fakeKernel)
++	s.kernel = k
++	s.lastUsers = []model.UserSpec{{ID: 1, UUID: "test-user"}}
++	s.lastUserHash = computeUserHash(s.lastUsers)
++	return s, k
++}
++
++func fileCertificateSpec(certPath, keyPath string) *model.NodeSpec {
++	return &model.NodeSpec{
++		Protocol: "hysteria", Version: 2, ServerPort: 10443,
++		CertConfig: &config.CertConfig{CertMode: "file", CertFile: certPath, KeyFile: keyPath},
++	}
++}
++
++func TestCertificateFailuresStopCoreAndPreserveSpecificError(t *testing.T) {
++	certPath, keyPath := certificatePair(t)
++	_, otherKey := certificatePair(t)
++	malformed := filepath.Join(t.TempDir(), "malformed.pem")
++	if err := os.WriteFile(malformed, []byte("not a certificate"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	cases := []struct {
++		name, certPath, keyPath, want string
++	}{
++		{"missing_certificate", certPath + ".missing", keyPath, "cert file: open "},
++		{"missing_private_key", certPath, keyPath + ".missing", "key file: open "},
++		{"unreadable_certificate", t.TempDir(), keyPath, "is a directory"},
++		{"invalid_pem", malformed, keyPath, "failed to find any PEM data in certificate input"},
++		{"mismatched_key", certPath, otherKey, "private key does not match public key"},
++	}
++	for _, running := range []bool{false, true} {
++		stage := map[bool]string{false: "startup", true: "reload"}[running]
++		for _, tc := range cases {
++			t.Run(stage+"/"+tc.name, func(t *testing.T) {
++				s, k := newCertificateService()
++				if running {
++					s.lastConfig = fileCertificateSpec(certPath, keyPath)
++					s.reconcileKernel(context.Background())
++					if !s.Status().Ready || !k.running {
++						t.Fatal("valid baseline did not start")
++					}
++				}
++				starts, reloads := k.startCalls, k.reloadCalls
++				s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncConfig, Config: fileCertificateSpec(tc.certPath, tc.keyPath)})
++				status := s.Status()
++				if k.running || status.Ready || status.State != "error" || status.AppliedUsers != 0 {
++					t.Fatalf("failed certificate left a ready core: %+v", status)
++				}
++				if !strings.Contains(status.Error, "certificate configuration (file): cert reconfigure: ") || !strings.Contains(status.Error, tc.want) {
++					t.Fatalf("detailed certificate failure was lost: %s", status.Error)
++				}
++				if k.startCalls != starts || k.reloadCalls != reloads || s.retryAt.IsZero() {
++					t.Fatal("failed certificate reached kernel start/reload or did not schedule retry")
++				}
++				// The same service recovers through a corrected panel config.
++				s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncConfig, Config: fileCertificateSpec(certPath, keyPath)})
++				if !k.running || !s.Status().Ready || s.Status().Error != "" {
++					t.Fatalf("corrected certificate did not recover: %+v", s.Status())
++				}
++			})
++		}
++	}
++}
++
++func TestCertificatePermissionDeniedIsReported(t *testing.T) {
++	if os.Geteuid() == 0 {
++		t.Skip("root bypasses Unix read permissions; this case runs on the non-root CI runner")
++	}
++	certPath, keyPath := certificatePair(t)
++	if err := os.Chmod(keyPath, 0000); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = os.Chmod(keyPath, 0600) })
++	s, k := newCertificateService()
++	s.lastConfig = fileCertificateSpec(certPath, keyPath)
++	s.reconcileKernel(context.Background())
++	if k.running || !strings.Contains(s.Status().Error, "permission denied") || !strings.Contains(s.Status().Error, "key file") {
++		t.Fatalf("private-key permission error was lost: %+v", s.Status())
++	}
++	if err := os.Chmod(keyPath, 0600); err != nil {
++		t.Fatal(err)
++	}
++	s.resetRetry()
++	s.reconcileKernel(context.Background())
++	if !k.running || !s.Status().Ready {
++		t.Fatalf("corrected file permissions did not recover on retry: %+v", s.Status())
++	}
++}
++
++func TestCertificateNoneDoesNotReuseOldMaterial(t *testing.T) {
++	certPath, keyPath := certificatePair(t)
++	s, k := newCertificateService()
++	s.lastConfig = fileCertificateSpec(certPath, keyPath)
++	s.reconcileKernel(context.Background())
++	if !k.running || !s.Status().Ready {
++		t.Fatal("valid baseline did not start")
++	}
++	desired := &model.NodeSpec{Protocol: "hysteria", Version: 2, ServerPort: 10443, CertConfig: &config.CertConfig{CertMode: "none"}}
++	s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncConfig, Config: desired})
++	if k.running || s.Status().Ready || s.cert.HasCert() || !strings.Contains(s.Status().Error, "requires TLS certificate") {
++		t.Fatalf("none reused a previously loaded certificate: %+v", s.Status())
++	}
++}
+diff --git a/internal/service/certificate_renewal_test.go b/internal/service/certificate_renewal_test.go
+new file mode 100644
+index 0000000..d228c20
+--- /dev/null
++++ b/internal/service/certificate_renewal_test.go
+@@ -0,0 +1,163 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/cedar2025/xboard-node/internal/cert"
++	"github.com/cedar2025/xboard-node/internal/config"
++	"github.com/cedar2025/xboard-node/internal/controlplane"
++	"github.com/cedar2025/xboard-node/internal/kernel"
++	"github.com/cedar2025/xboard-node/internal/model"
++)
++
++// Model certmagic's atomic material update followed by its renewal signal.
++// No external CA, network request, or test-only production API is needed.
++type renewingCertificate struct {
++	*cert.Manager
++	material atomic.Pointer[kernel.TLSCert]
++	renewed  atomic.Bool
++}
++
++func (m *renewingCertificate) TLSCert() kernel.TLSCert {
++	if material := m.material.Load(); material != nil {
++		return *material
++	}
++	return kernel.TLSCert{}
++}
++func (m *renewingCertificate) CertRenewed() bool { return m.renewed.Swap(false) }
++func (m *renewingCertificate) Reconfigure(context.Context, config.CertConfig) (bool, error) {
++	return false, nil // An unchanged running ACME configuration is idempotent.
++}
++func (m *renewingCertificate) publish(value string, renewed bool) {
++	m.material.Store(&kernel.TLSCert{CertPEM: []byte(value), KeyPEM: []byte("key")})
++	m.renewed.Store(renewed)
++}
++
++type certificateRecordingKernel struct {
++	certificateKernel
++	applied chan kernel.TLSCert
++}
++
++func (k *certificateRecordingKernel) Start(spec *model.NodeSpec, users []model.UserSpec, material kernel.TLSCert) error {
++	if err := k.fakeKernel.Start(spec, users, material); err != nil {
++		return err
++	}
++	k.applied <- material
++	return nil
++}
++func (k *certificateRecordingKernel) Reload(spec *model.NodeSpec, users []model.UserSpec, material kernel.TLSCert) error {
++	if err := k.fakeKernel.Reload(spec, users, material); err != nil {
++		return err
++	}
++	k.applied <- material
++	return nil
++}
++
++type certificateRenewalSource struct {
++	bootstrapOnlySource
++	polls atomic.Int32
++}
++
++func (f *certificateRenewalSource) Poll(context.Context) (controlplane.Snapshot, error) {
++	f.polls.Add(1)
++	return controlplane.Snapshot{}, errors.New("REST unavailable")
++}
++func (f *certificateRenewalSource) SupportsPolling() bool { return true }
++
++type certificateRenewalSink struct{ controlplane.Sink }
++
++func (certificateRenewalSink) SupportsReporting() bool     { return false }
++func (certificateRenewalSink) SupportsDeviceReports() bool { return false }
++
++func renewalService() (*Service, *certificateRecordingKernel, *renewingCertificate) {
++	k := &certificateRecordingKernel{applied: make(chan kernel.TLSCert, 8)}
++	s := newTestService(&k.fakeKernel)
++	s.kernel = k
++	m := &renewingCertificate{Manager: cert.NewManager(config.CertConfig{})}
++	m.publish("initial", false)
++	s.cert = m
++	s.lastConfig = &model.NodeSpec{Protocol: "hysteria", Version: 2, ServerPort: 10443,
++		CertConfig: &config.CertConfig{CertMode: "http", Domain: "example.test"}}
++	s.updateUserState([]model.UserSpec{{ID: 1, UUID: "test-user"}})
++	return s, k, m
++}
++
++func awaitCertificate(t *testing.T, ch <-chan kernel.TLSCert, want string) {
++	t.Helper()
++	select {
++	case material := <-ch:
++		if string(material.CertPEM) != want {
++			t.Fatalf("kernel received %q, want %q", material.CertPEM, want)
++		}
++	case <-time.After(3 * time.Second):
++		t.Fatalf("kernel never received %s certificate", want)
++	}
++}
++
++func TestCertificateRenewalReloadsWithWebSocketContinuouslyConnected(t *testing.T) {
++	s, k, m := renewalService()
++	source := &certificateRenewalSource{bootstrapOnlySource: bootstrapOnlySource{bootstrap: controlplane.Bootstrap{
++		Config: s.lastConfig, Users: s.lastUsers, Push: bootstrapPush{},
++	}}}
++	s.source, s.sink = source, certificateRenewalSink{}
++	s.cfg.Node = config.NodeConfig{PushInterval: 3600, PullInterval: 1, TrackInterval: 3600, DeviceReportInterval: 3600}
++	s.cfg.WS.DiscoveryInterval = 3600
++	ctx, cancel := context.WithCancel(context.Background())
++	done := make(chan error, 1)
++	go func() { done <- s.Run(ctx) }()
++	t.Cleanup(func() {
++		cancel()
++		select {
++		case err := <-done:
++			if err != nil {
++				t.Errorf("service stopped with error: %v", err)
++			}
++		case <-time.After(3 * time.Second):
++			t.Error("service did not stop")
++		}
++	})
++	awaitCertificate(t, k.applied, "initial")
++	m.publish("renewed", true)
++	awaitCertificate(t, k.applied, "renewed")
++	if source.polls.Load() != 0 {
++		t.Fatal("renewal depended on REST despite continuously connected WebSocket")
++	}
++	select {
++	case <-k.applied:
++		t.Fatal("one renewal caused duplicate reloads")
++	case <-time.After(1200 * time.Millisecond):
++	}
++}
++
++func TestCertificateRenewalSurvivesNoUsersAndFailedREST(t *testing.T) {
++	s, k, m := renewalService()
++	source := &certificateRenewalSource{}
++	s.source = source
++	s.pullResults = make(chan pullResult, 1)
++	s.reconcileKernel(context.Background())
++	awaitCertificate(t, k.applied, "initial")
++	s.updateUserState(nil)
++	s.reconcileKernel(context.Background())
++	m.publish("renewed", true)
++	s.pullViaAPIAsync(context.Background())
++	deadline := time.Now().Add(time.Second)
++	for s.pullActive.Load() && time.Now().Before(deadline) {
++		time.Sleep(time.Millisecond)
++	}
++	if s.pullActive.Load() || source.polls.Load() != 1 {
++		t.Fatal("failed REST poll did not complete")
++	}
++	s.reconcileKernel(context.Background())
++	if k.running || s.Status().State != "waiting_users" || !s.forceReload {
++		t.Fatal("renewal started an empty node or lost its pending reload")
++	}
++	s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "test-user"}}, "")
++	awaitCertificate(t, k.applied, "renewed")
++	if !s.Status().Ready {
++		t.Fatal("new users did not start with the renewed certificate")
++	}
++}
+diff --git a/internal/service/service.go b/internal/service/service.go
+index 535598b..e467620 100644
+--- a/internal/service/service.go
++++ b/internal/service/service.go
+@@ -29,6 +29,17 @@ import (
+ 	"github.com/cedar2025/xboard-node/internal/tracker"
+ )
+ 
++// certificateManager keeps renewal notification and material access separate
++// from control-plane polling; the real manager publishes both atomically.
++type certificateManager interface {
++	Start(context.Context) error
++	Stop()
++	Reconfigure(context.Context, config.CertConfig) (bool, error)
++	HasCert() bool
++	TLSCert() kernel.TLSCert
++	CertRenewed() bool
++}
++
+ type Service struct {
+ 	cfg          *config.Config
+ 	source       controlplane.Source
+@@ -37,7 +48,7 @@ type Service struct {
+ 	tracker      *tracker.Tracker
+ 	limiter      *limiter.Limiter
+ 	speedTracker *limiter.SpeedTracker
+-	cert         *cert.Manager
++	cert         certificateManager
+ 
+ 	lastConfig *model.NodeSpec
+ 	lastUsers  []model.UserSpec
+@@ -93,7 +104,6 @@ type pullResult struct {
+ 	users           []model.UserSpec
+ 	configHash      string
+ 	userHash        string
+-	certChanged     bool
+ 	revision        uint64
+ 	checkRevision   bool
+ 	mailboxRevision uint64
+@@ -337,10 +347,10 @@ func (s *Service) initialSetup(ctx context.Context) error {
+ }
+ 
+ // applyRemoteOverrides updates service-level settings (log level, cert config)
+-// from the panel's NodeConfig. Returns true if cert paths changed (kernel restart needed).
+-func (s *Service) applyRemoteOverrides(ctx context.Context, nc *model.NodeSpec) bool {
++// from the panel's NodeConfig. A rejected certificate must stop reconciliation.
++func (s *Service) applyRemoteOverrides(ctx context.Context, nc *model.NodeSpec) error {
+ 	if nc == nil {
+-		return false
++		return nil
+ 	}
+ 
+ 	// Dynamic Log Level (Kernel)
+@@ -363,22 +373,21 @@ func (s *Service) applyRemoteOverrides(ctx context.Context, nc *model.NodeSpec)
+ 		s.cfg.Cert.Domain = nc.Domain
+ 	}
+ 
+-	return false
++	return nil
+ }
+ 
+-// applyPanelCert converts a panel CertConfig into the local config format and
+-// reconfigures the cert manager. Reports whether cert paths changed.
+-func (s *Service) applyNodeCert(ctx context.Context, newCfg *config.CertConfig) bool {
++// applyNodeCert reconfigures the certificate manager. Errors are returned to the
++// lifecycle so neither startup nor reload can silently use stale PEM material.
++func (s *Service) applyNodeCert(ctx context.Context, newCfg *config.CertConfig) error {
+ 	if newCfg == nil {
+-		return false
++		return nil
+ 	}
+ 	cfgCopy := *newCfg
+ 	cfgCopy.CertDir = s.cfg.Cert.CertDir
+ 
+ 	changed, err := s.cert.Reconfigure(ctx, cfgCopy)
+ 	if err != nil {
+-		nlog.Core().Error("failed to apply runtime cert config", "mode", cfgCopy.CertMode, "error", err)
+-		return false
++		return fmt.Errorf("certificate configuration (%s): %w", cfgCopy.CertMode, err)
+ 	}
+ 	s.cfg.Cert = cfgCopy
+ 	if changed {
+@@ -389,7 +398,7 @@ func (s *Service) applyNodeCert(ctx context.Context, newCfg *config.CertConfig)
+ 			nlog.Core().Info(msg)
+ 		}
+ 	}
+-	return changed
++	return nil
+ }
+ 
+ // startWSClient starts the push client goroutine if a client is configured.
+@@ -638,7 +647,6 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
+ 	if s.machineMailbox != nil {
+ 		mailboxRevision = s.machineMailbox.Revision()
+ 	}
+-	certChanged := s.cert.CertRenewed()
+ 	forceSnapshot := s.wsResyncPending.Load()
+ 
+ 	go func() {
+@@ -656,11 +664,11 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
+ 		}
+ 		s.pullBackoff.onSuccess()
+ 
+-		result := pullResult{certChanged: certChanged, revision: currentRevision, checkRevision: true, mailboxRevision: mailboxRevision}
++		result := pullResult{revision: currentRevision, checkRevision: true, mailboxRevision: mailboxRevision}
+ 		if snapshot.Config != nil {
+ 			result.config = snapshot.Config
+ 			result.configHash = computeConfigHash(snapshot.Config)
+-			if result.configHash == currentConfigHash && !certChanged {
++			if result.configHash == currentConfigHash {
+ 				result.config = nil
+ 			}
+ 		}
+@@ -693,11 +701,6 @@ func (s *Service) applyPullResult(ctx context.Context, result pullResult) {
+ 	s.wsResyncPending.Store(false)
+ 	configChanged := false
+ 
+-	if result.certChanged {
+-		nlog.Core().Info("certificate renewed, kernel restart needed")
+-		configChanged = true
+-	}
+-
+ 	if result.config != nil {
+ 		configChanged = true
+ 		if s.nodeLog == nil {
+@@ -886,6 +889,13 @@ func (s *Service) reconcileKernel(ctx context.Context) {
+ 	if ctx.Err() != nil {
+ 		return
+ 	}
++	// This runs on the serialized owner loop even while WebSocket is healthy.
++	// A failed/skipped REST snapshot must never swallow a certificate renewal.
++	if s.cert.CertRenewed() {
++		nlog.Core().Info("certificate renewed, reloading kernel")
++		s.forceReload = true
++		s.resetRetry()
++	}
+ 	if s.lastConfig == nil {
+ 		s.stopKernel("waiting_config")
+ 		return
+@@ -902,7 +912,14 @@ func (s *Service) reconcileKernel(ctx context.Context) {
+ 		return
+ 	}
+ 	if !s.kernel.IsRunning() {
+-		s.applyRemoteOverrides(ctx, s.lastConfig)
++		if err := s.applyRemoteOverrides(ctx, s.lastConfig); err != nil {
++			s.failKernel(err)
++			return
++		}
++		if err := validateTLSRequirements(s.lastConfig, s.cert.TLSCert(), cfgKernelType(s.cfg)); err != nil {
++			s.failKernel(fmt.Errorf("runtime config: %w", err))
++			return
++		}
+ 		s.startKernel(s.lastConfig, s.lastUsers)
+ 		return
+ 	}
+@@ -914,7 +931,14 @@ func (s *Service) reconcileKernel(ctx context.Context) {
+ 	s.setCoreStatus("starting", "")
+ 	var err error
+ 	if configChanged {
+-		s.applyRemoteOverrides(ctx, s.lastConfig)
++		if err := s.applyRemoteOverrides(ctx, s.lastConfig); err != nil {
++			s.failKernel(err)
++			return
++		}
++		if err := validateTLSRequirements(s.lastConfig, s.cert.TLSCert(), cfgKernelType(s.cfg)); err != nil {
++			s.failKernel(fmt.Errorf("runtime config: %w", err))
++			return
++		}
+ 		err = s.kernel.Reload(s.lastConfig, s.lastUsers, s.cert.TLSCert())
+ 	} else {
+ 		_, _, err = s.kernel.UpdateUsers(s.lastUsers)

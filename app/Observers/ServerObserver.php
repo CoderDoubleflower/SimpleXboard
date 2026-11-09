@@ -24,12 +24,15 @@ class ServerObserver
         $oldUsed = (int) $server->getOriginal('u') + (int) $server->getOriginal('d');
         $wasAvailable = (bool) $server->getOriginal('enabled')
             && ($oldLimit === null || (int) $oldLimit === 0 || $oldUsed < $oldLimit);
-        $fullSync = $server->wasChanged(['enabled', 'transfer_enable']) || $wasAvailable !== $server->isAvailable();
+        // Certificate rejection withdraws users, including on standalone nodes.
+        // A repaired source must restore both snapshots while WS stays connected.
+        $fullSync = $server->wasChanged(['enabled', 'transfer_enable', 'cert_config', 'type']) || $wasAvailable !== $server->isAvailable();
         $configChanged = $server->wasChanged([
             'server_port', 'protocol_settings', 'type', 'route_ids',
             'custom_outbounds', 'custom_routes', 'cert_config', 'outbound_id',
         ]);
-        $machineIds = $server->wasChanged(['machine_id', 'enabled'])
+        // A repaired legacy certificate must rejoin a machine's deployable node set.
+        $machineIds = $server->wasChanged(['machine_id', 'enabled', 'cert_config', 'type'])
             ? array_unique(array_filter([$server->machine_id, $server->getOriginal('machine_id')])) : [];
         DB::afterCommit(function () use ($nodeId, $fullSync, $configChanged, $machineIds) {
             if ($fullSync) NodeSyncService::notifyFullSync($nodeId);

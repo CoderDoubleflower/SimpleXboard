@@ -1,4 +1,4 @@
-name: Verify node lifecycle and outbounds
+name: Verify node lifecycle, outbounds and certificates
 
 on:
   pull_request:
@@ -72,7 +72,7 @@ jobs:
       - name: Reproduce zero-user startup on the original core lifecycle
         timeout-minutes: 4
         run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-baseline -- python tests/Integration/node_core_lifecycle.py --xboard-node "$RUNNER_TEMP/xboard-node-original" --mihomo "$RUNNER_TEMP/mihomo" --expect-stalled
-      - name: Apply the reviewed lifecycle patch
+      - name: Apply the reviewed node patches
         working-directory: .node-source
         run: |
           test "$(git rev-parse HEAD)" = 0a29338e1f102a462363ce3527417029f89bab28
@@ -82,16 +82,18 @@ jobs:
           git apply ../patches/xboard-node/v1.13-managed-outbounds.patch
           git apply --check ../patches/xboard-node/v1.13-node-maintenance.patch
           git apply ../patches/xboard-node/v1.13-node-maintenance.patch
+          git apply --check ../patches/xboard-node/v1.13-server-certificates.patch
+          git apply ../patches/xboard-node/v1.13-server-certificates.patch
       - name: Run node regression tests
         working-directory: .node-source
         run: go test -p 2 -tags "$NODE_BUILD_TAGS" ./...
       - name: Check concurrent lifecycle and status access
         working-directory: .node-source
-        run: go test -p 2 -race -tags "$NODE_BUILD_TAGS" ./internal/service ./internal/controlplane ./internal/machine ./internal/panel ./internal/kernel/singbox ./cmd/xboard-node
+        run: go test -p 2 -race -tags "$NODE_BUILD_TAGS" ./internal/cert ./internal/service ./internal/controlplane ./internal/machine ./internal/panel ./internal/kernel/singbox ./cmd/xboard-node
       - name: Build the fixed node
         working-directory: .node-source
         run: |
-          CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags "-s -w -X main.version=v1.13-simplexboard.2 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/xboard-node" ./cmd/xboard-node
+          CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags "-s -w -X main.version=v1.13-simplexboard.3 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/xboard-node" ./cmd/xboard-node
           CGO_ENABLED=0 go build -trimpath -tags "$NODE_BUILD_TAGS" -o "$RUNNER_TEMP/singbox-fixture" ../tests/Support/singbox-fixture.go
           CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags '-s -w' -o "$RUNNER_TEMP/xbctl" ./cmd/xbctl
       - name: Verify machine lifecycle through real REALITY and mihomo traffic
@@ -103,6 +105,9 @@ jobs:
           sudo ip address add 198.51.100.10/32 dev lo
           trap 'sudo ip address del 198.51.100.10/32 dev lo' EXIT
           python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-outbound -- python tests/Integration/outbound_connections.py --xboard-node "$RUNNER_TEMP/xboard-node" --kernel-fixture "$RUNNER_TEMP/singbox-fixture" --mihomo "$RUNNER_TEMP/mihomo"
+      - name: Verify Hysteria2 certificates, detailed errors and recovery
+        timeout-minutes: 5
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-certificates -- python tests/Integration/hysteria_certificates.py --xboard-node "$RUNNER_TEMP/xboard-node" --mihomo "$RUNNER_TEMP/mihomo"
       - name: Verify node maintenance failure handling
         run: python tests/Integration/node_maintenance.py
       - name: Stage the verified native release
@@ -118,7 +123,7 @@ jobs:
       - name: Save the verified native binary
         uses: actions/upload-artifact@v4
         with:
-          name: xboard-node-v1.13-simplexboard.2-linux-${{ matrix.arch }}
+          name: xboard-node-v1.13-simplexboard.3-linux-${{ matrix.arch }}
           path: |
             ${{ runner.temp }}/xboard-node
             ${{ runner.temp }}/xboard-node.sha256

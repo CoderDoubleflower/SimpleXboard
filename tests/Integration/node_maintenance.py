@@ -25,7 +25,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 SOURCE = REPO / "scripts/node-manager.sh"
-VERSION = "v1.13-simplexboard.2"
+VERSION = "v1.13-simplexboard.3"
 
 
 def digest(path):

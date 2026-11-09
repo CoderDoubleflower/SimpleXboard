@@ -103,7 +103,8 @@ test('VLESS REALITY editor preserves extension settings and separates enable/sho
 
 test('Hysteria2 uses the real hysteria protocol contract', () => {
   const node = nodePayload({ ...commonNode, type: 'hysteria', protocol_json: '{"extra":"keep"}', hy_version: '2',
-    tls_server_name: 'hy.example.test', tls_insecure: false, hy_obfs: true, hy_obfs_password: 'obfs-key', hy_up: '100', hy_down: '200', hy_hop: '30' });
+    tls_server_name: 'hy.example.test', tls_insecure: false, hy_obfs: true, hy_obfs_password: 'obfs-key', hy_up: '100', hy_down: '200', hy_hop: '30',
+    cert_mode: 'self', cert_domain: 'hy.example.test' });
   assert.equal(node.type, 'hysteria');
   assert.equal(node.protocol_settings.version, 2);
   assert.deepEqual(node.protocol_settings.tls, { server_name: 'hy.example.test', allow_insecure: false });

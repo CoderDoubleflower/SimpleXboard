@@ -5,6 +5,7 @@ import { createRealityGenerator } from '../reality.js';
 import { hasCustomRouting, nodeOutboundLabel, outboundProtocolName, outboundAddress } from '../outbounds.js';
 import { outboundsPanel } from './outbounds.js';
 import { machineMaintenance, deleteMachine } from './node-maintenance.js';
+import { certificateFields } from './certificate-fields.js';
 
 export async function nodesPage(host, context) {
   const { api, signal, navigate } = context;
@@ -150,15 +151,22 @@ function defaultProtocol(type) {
 function nodeEditor(node, machines, outboundState, context, reload) {
   let editor;
   let generation = null;
+  let certificateEditor = null;
   let saving = false;
   let syncGenerationControls = () => {};
   const types = [{ value: 'vless', label: 'VLESS + REALITY / TLS' }, { value: 'hysteria', label: 'Hysteria2' }];
   if (node && !types.some(type => type.value === node.type)) types.push({ value: node.type, label: protocolName(node) });
   const type = select('type', types, node?.type ?? 'vless', { disabled: Boolean(node) });
   const protocolBody = h('div', { class: 'form-grid' });
+  const certificateBody = h('div');
+  const certificateSection = h('section', { class: 'form-section' }, h('h3', {}, '服务端 TLS 证书'), certificateBody);
+  const advancedHint = h('span');
   const protocolJson = textarea('protocol_json', '', { rows: 12, spellcheck: false, class: 'input mono code-input' });
   const advanced = {};
-  for (const key of ['route_ids', 'excludes', 'ips', 'parent_id', 'spectific_key', 'custom_routes', 'custom_outbounds', 'cert_config']) if (node?.[key] !== undefined && node[key] !== null) advanced[key] = node[key];
+  for (const key of ['route_ids', 'excludes', 'ips', 'parent_id', 'spectific_key', 'custom_routes', 'custom_outbounds', 'cert_config']) {
+    if (key === 'cert_config' && node?.type === 'hysteria') continue;
+    if (node?.[key] !== undefined && node[key] !== null) advanced[key] = node[key];
+  }
   const advancedJson = textarea('advanced_json', JSON.stringify(advanced, null, 2), { rows: 7, spellcheck: false, class: 'input mono code-input' });
   const machine = select('machine_id', [{ value: '', label: '独立节点（不绑定 VPS）' }, ...machines.map(item => ({ value: item.id, label: item.name }))], node?.machine_id ?? '');
   const outboundOptions = [{ value: '', label: '直连（使用当前 VPS 出口）' }, ...outboundState.items.map(item => ({ value: item.id, label: `${item.name} · ${outboundProtocolName(item)} · ${outboundAddress(item)}` }))];
@@ -216,19 +224,26 @@ function nodeEditor(node, machines, outboundState, context, reload) {
       field('标签', input('tags', (node?.tags ?? []).join(', '), { placeholder: '地区、用途等，用逗号分隔' }), { wide: true })),
     h('div', { class: 'checkbox-grid' }, checkbox('enabled', '启用节点', node?.enabled !== false && node?.enabled !== 0, '停用后不再向此节点授权成员。'), checkbox('show', '在订阅中展示', node ? Boolean(node.show) : true, '隐藏只影响订阅内容，不等同于停用。')),
     h('section', { class: 'form-section' }, h('h3', {}, '连接与安全'), protocolBody),
+    certificateSection,
     h('section', { class: 'form-section stack-lg' }, h('h3', {}, '流量出口'), field('出站节点', outbound), outboundHint),
     h('details', { class: 'advanced-section' }, h('summary', {}, icon('settings'), '高级连接配置'),
       h('div', { class: 'stack-lg advanced-content' },
         field('协议参数 JSON', protocolJson, { hint: '维护传输、复用等额外参数。上方已填写的连接字段优先，其他字段保持原值。' }),
-        field('节点高级配置 JSON', advancedJson, { hint: '可维护 cert_config、custom_routes、custom_outbounds、route_ids 等现有节点参数。' }))));
+        field('节点高级配置 JSON', advancedJson, { hint: advancedHint }))));
 
   function renderProtocol() {
     generation?.cancel();
     generation = null;
+    certificateEditor = null;
     syncGenerationControls = () => {};
     const settings = type.value === node?.type ? (node.protocol_settings ?? {}) : defaultProtocol(type.value);
     protocolJson.value = JSON.stringify(settings, null, 2);
     protocolBody.replaceChildren();
+    certificateBody.replaceChildren();
+    certificateSection.hidden = type.value !== 'hysteria';
+    advancedHint.textContent = type.value === 'hysteria'
+      ? '可维护 custom_routes、custom_outbounds、route_ids 等参数。证书请使用上方“服务端 TLS 证书”；现有证书扩展字段会保留。'
+      : '可维护 cert_config、custom_routes、custom_outbounds、route_ids 等现有节点参数。';
     if (type.value === 'vless') {
       const tls = select('vless_tls', [{ value: '2', label: 'REALITY' }, { value: '1', label: 'TLS' }, { value: '0', label: '不启用 TLS' }], String(settings.tls ?? 2));
       const publicKey = input('reality_public_key', settings.reality_settings?.public_key ?? '', { required: true, class: 'input mono', spellcheck: false });
@@ -298,12 +313,14 @@ function nodeEditor(node, machines, outboundState, context, reload) {
       obfs.querySelector('input').addEventListener('change', toggleObfs);
       protocolBody.append(
         field('协议版本', select('hy_version', [{ value: 2, label: 'Hysteria2' }, { value: 1, label: 'Hysteria（已有节点兼容）' }], settings.version ?? 2)),
-        field('TLS 服务器名称 / SNI', input('tls_server_name', settings.tls?.server_name ?? '', { required: true, placeholder: 'hy.example.com' }), { required: true }),
+        field('TLS 服务器名称 / SNI', input('tls_server_name', settings.tls?.server_name ?? '', { required: true, placeholder: 'hy.example.com' }), { required: true, hint: '客户端期望的证书名称。请在下方另外配置服务端证书。' }),
         field('上行带宽（Mbps）', input('hy_up', settings.bandwidth?.up ?? '', { type: 'number', min: 0, step: 1 })),
         field('下行带宽（Mbps）', input('hy_down', settings.bandwidth?.down ?? '', { type: 'number', min: 0, step: 1 })),
         field('跳跃间隔（秒）', input('hy_hop', settings.hop_interval ?? '', { type: 'number', min: 0, step: 1, placeholder: '使用默认值' })),
-        checkbox('tls_insecure', '跳过证书校验', Boolean(settings.tls?.allow_insecure), '仅在确实需要时启用。'),
+        checkbox('tls_insecure', '跳过证书验证', Boolean(settings.tls?.allow_insecure), '仅影响客户端验证；服务端仍必须配置证书和私钥。'),
         obfs, field('混淆密码', password));
+      certificateEditor = certificateFields(node?.cert_config);
+      certificateBody.append(certificateEditor.element);
       toggleObfs();
     } else protocolBody.append(h('div', { class: 'field-wide' }, notice('此节点使用已有协议。请在“高级连接配置”中编辑原有协议参数 JSON，通用连接字段仍可直接修改。')));
   }
@@ -313,10 +330,19 @@ function nodeEditor(node, machines, outboundState, context, reload) {
     submitLabel: node ? '保存节点' : '创建节点',
     onSubmit: async form => {
       if (generation?.busy) throw new Error('正在生成，请等待完成后再保存。');
-      const payload = nodePayload({ ...formValues(form), type: type.value }, node);
-      saving = true;
-      syncGenerationControls();
-      try { return await context.api.post('server/manage/save', payload); }
+      try {
+        const payload = nodePayload({ ...formValues(form), type: type.value }, node);
+        saving = true;
+        syncGenerationControls();
+        return await context.api.post('server/manage/save', payload);
+      } catch (error) {
+        certificateEditor?.reportError(error);
+        if (error.field === 'advanced_json') {
+          advancedJson.closest('details').open = true;
+          setTimeout(() => advancedJson.focus(), 0);
+        }
+        throw error;
+      }
       finally { saving = false; syncGenerationControls(); }
     },
     onSuccess: () => { toast(node ? '节点配置已保存' : '节点已创建'); reload(); },

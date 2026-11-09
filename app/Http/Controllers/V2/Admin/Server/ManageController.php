@@ -8,6 +8,7 @@ use App\Http\Requests\Admin\ServerSave;
 use App\Models\Server;
 use App\Models\ServerOutbound;
 use App\Services\OutboundCapabilityService;
+use App\Services\ServerCertificateService;
 use App\Services\ServerOutboundService;
 use App\Services\ServerService;
 use App\Utils\Helper;
@@ -60,6 +61,8 @@ class ManageController extends Controller
         try {
             DB::transaction(function () use ($params) {
                 $server = isset($params['id']) ? Server::lockForUpdate()->findOrFail($params['id']) : null;
+                $certificate = app(ServerCertificateService::class)->validateForNode($params, $server);
+                if ($params['type'] === Server::TYPE_HYSTERIA) $params['cert_config'] = $certificate;
                 app(ServerOutboundService::class)->assertSelection($params, $server);
                 $outboundId = array_key_exists('outbound_id', $params) ? $params['outbound_id'] : $server?->outbound_id;
                 $machineId = array_key_exists('machine_id', $params) ? $params['machine_id'] : $server?->machine_id;
@@ -91,6 +94,9 @@ class ManageController extends Controller
         return DB::transaction(function () use ($params) {
             $server = Server::lockForUpdate()->find($params['id']);
             if (!$server) return $this->fail([400202, '服务器不存在']);
+            if ((bool) ($params['enabled'] ?? $server->enabled)) {
+                app(ServerCertificateService::class)->validateForNode([], $server);
+            }
             $machineId = array_key_exists('machine_id', $params) ? $params['machine_id'] : $server->machine_id;
             OutboundCapabilityService::validateSelection($server, $server->outbound_id, $machineId === null ? null : (int) $machineId);
             if (array_key_exists('show', $params)) $server->show = (int) $params['show'];
@@ -246,10 +252,13 @@ class ManageController extends Controller
                 $servers = Server::whereIn('id', $ids)->lockForUpdate()->get();
                 /** @var Server $server */
                 foreach ($servers as $server) {
+                    if ((bool) ($update['enabled'] ?? $server->enabled)) {
+                        app(ServerCertificateService::class)->validateForNode([], $server);
+                    }
                     $machineId = array_key_exists('machine_id', $update) ? $update['machine_id'] : $server->machine_id;
                     OutboundCapabilityService::validateSelection($server, $server->outbound_id, $machineId === null ? null : (int) $machineId);
-                    $server->update($update);
                 }
+                foreach ($servers as $server) $server->update($update);
             });
             return $this->success(true);
         } catch (ValidationException $e) {
