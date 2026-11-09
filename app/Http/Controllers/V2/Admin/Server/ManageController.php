@@ -6,6 +6,9 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ServerSave;
 use App\Models\Server;
+use App\Models\ServerOutbound;
+use App\Services\OutboundCapabilityService;
+use App\Services\ServerOutboundService;
 use App\Services\ServerService;
 use App\Utils\Helper;
 use Illuminate\Http\JsonResponse;
@@ -13,6 +16,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use ParagonIE_Sodium_Compat;
+use Illuminate\Validation\ValidationException;
 
 class ManageController extends Controller
 {
@@ -53,26 +57,25 @@ class ManageController extends Controller
     public function save(ServerSave $request)
     {
         $params = $request->validated();
-        if ($request->input('id')) {
-            $server = Server::find($request->input('id'));
-            if (!$server) {
-                return $this->fail([400202, '服务器不存在']);
-            }
-            try {
-                $server->update($params);
-                return $this->success(true);
-            } catch (\Exception $e) {
-                Log::error($e);
-                return $this->fail([500, '保存失败']);
-            }
-        }
-
         try {
-            Server::create($params);
+            DB::transaction(function () use ($params) {
+                $server = isset($params['id']) ? Server::lockForUpdate()->findOrFail($params['id']) : null;
+                app(ServerOutboundService::class)->assertSelection($params, $server);
+                $outboundId = array_key_exists('outbound_id', $params) ? $params['outbound_id'] : $server?->outbound_id;
+                $machineId = array_key_exists('machine_id', $params) ? $params['machine_id'] : $server?->machine_id;
+                OutboundCapabilityService::validateSelection($server, $outboundId === null ? null : (int) $outboundId, $machineId === null ? null : (int) $machineId);
+                if ($outboundId && !ServerOutbound::lockForUpdate()->find($outboundId)) {
+                    throw ValidationException::withMessages(['outbound_id' => '所选出站已不存在，请重新选择。']);
+                }
+                if ($server) $server->update($params);
+                else Server::create($params);
+            });
             return $this->success(true);
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error($e);
-            return $this->fail([500, '创建失败']);
+            return $this->fail([500, isset($params['id']) ? '保存失败' : '创建失败']);
         }
     }
 
@@ -85,26 +88,17 @@ class ManageController extends Controller
             'enabled' => 'sometimes|boolean',
         ]);
 
-        $server = Server::find($request->id);
-        if (!$server) {
-            return $this->fail([400202, '服务器不存在']);
-        }
-
-        if (array_key_exists('show', $params)) {
-            $server->show = (int) $params['show'];
-        }
-        if (array_key_exists('machine_id', $params)) {
-            $server->machine_id = $params['machine_id'] ?: null;
-        }
-        if (array_key_exists('enabled', $params)) {
-            $server->enabled = (bool) $params['enabled'];
-        }
-
-        if (!$server->save()) {
-            return $this->fail([500, '保存失败']);
-        }
-
-        return $this->success(true);
+        return DB::transaction(function () use ($params) {
+            $server = Server::lockForUpdate()->find($params['id']);
+            if (!$server) return $this->fail([400202, '服务器不存在']);
+            $machineId = array_key_exists('machine_id', $params) ? $params['machine_id'] : $server->machine_id;
+            OutboundCapabilityService::validateSelection($server, $server->outbound_id, $machineId === null ? null : (int) $machineId);
+            if (array_key_exists('show', $params)) $server->show = (int) $params['show'];
+            if (array_key_exists('machine_id', $params)) $server->machine_id = $params['machine_id'] ?: null;
+            if (array_key_exists('enabled', $params)) $server->enabled = (bool) $params['enabled'];
+            if (!$server->save()) return $this->fail([500, '保存失败']);
+            return $this->success(true);
+        });
     }
 
     /**
@@ -248,14 +242,18 @@ class ManageController extends Controller
         }
 
         try {
-            $servers = Server::whereIn('id', $ids)->get();
-            DB::transaction(function () use ($servers, $update) {
+            DB::transaction(function () use ($ids, $update) {
+                $servers = Server::whereIn('id', $ids)->lockForUpdate()->get();
                 /** @var Server $server */
                 foreach ($servers as $server) {
+                    $machineId = array_key_exists('machine_id', $update) ? $update['machine_id'] : $server->machine_id;
+                    OutboundCapabilityService::validateSelection($server, $server->outbound_id, $machineId === null ? null : (int) $machineId);
                     $server->update($update);
                 }
             });
             return $this->success(true);
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error($e);
             return $this->fail([500, '批量更新失败']);

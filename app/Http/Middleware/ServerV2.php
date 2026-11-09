@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Models\Server as ServerModel;
 use App\Models\ServerMachine;
 use App\Services\ServerService;
+use App\Services\OutboundCapabilityService;
 use Closure;
 use Illuminate\Http\Request;
 
@@ -22,6 +23,7 @@ class ServerV2
             $this->authenticateByServerToken($request);
         }
 
+        OutboundCapabilityService::authenticate($request);
         return $next($request);
     }
 

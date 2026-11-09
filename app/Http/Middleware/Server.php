@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use App\Exceptions\ApiException;
 use App\Models\Server as ServerModel;
 use App\Services\ServerService;
+use App\Services\OutboundCapabilityService;
 use Closure;
 use Illuminate\Http\Request;
 
@@ -51,6 +52,8 @@ class Server
         }
 
         $request->attributes->set('node_info', $serverInfo);
+
+        OutboundCapabilityService::authenticate($request);
 
         return $next($request);
     }

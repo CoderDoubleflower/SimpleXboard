@@ -42,7 +42,8 @@ class NodeSyncService
     {
         foreach (Server::all() as $server) {
             if (!self::isNodeOnline($server->id)) continue;
-            $allowed = $user->isAvailable() && $server->isAvailable() && $user->canAccessServer($server);
+            $allowed = $user->isAvailable() && $server->isAvailable() && $user->canAccessServer($server)
+                && (!$server->outbound_id || OutboundCapabilityService::supportsNode($server));
             if (!$allowed || $revokeExisting) self::removeUserFromNode($server->id, $user->id);
             if ($allowed) {
                 self::push($server->id, 'sync.user.delta', [

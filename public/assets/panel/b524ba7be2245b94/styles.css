@@ -299,6 +299,9 @@ tbody tr:hover { background: var(--surface-soft); }
 textarea.input { min-height: 96px; resize: vertical; line-height: 1.8; }
 select.input { appearance: auto; padding-right: 20px; }
 .field-hint { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.field-error { margin-top: 8px; color: var(--danger); font-size: 12px; line-height: 1.8; }
+.input[aria-invalid="true"] { border-color: var(--danger); }
+.outbound-usage, .outbound-notes, .node-outbound { max-width: 240px; overflow-wrap: anywhere; }
 .secret-input { position: relative; }
 .secret-input>input { padding-right: 50px; }
 .secret-input>.icon-button { position: absolute; right: 1px; top: 1px; }

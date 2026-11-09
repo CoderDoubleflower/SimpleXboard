@@ -8,6 +8,7 @@ use App\Models\Server;
 use App\Models\ServerMachine;
 use App\Models\ServerMachineLoadHistory;
 use App\Services\NodeSyncService;
+use App\Services\OutboundCapabilityService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
@@ -31,6 +32,7 @@ class MachineController extends Controller
                     'machine_online' => $machine->is_active && $machine->last_seen_at !== null
                         && now()->timestamp - Server::CHECK_INTERVAL < $machine->last_seen_at,
                     'control_online' => (bool) Cache::get("machine_ws_alive:{$machine->id}", false),
+                    'managed_outbound_supported' => OutboundCapabilityService::supportsMachine($machine->id),
                     'load_status' => $machine->load_status,
                     'servers_count' => $machine->servers_count,
                     'created_at' => $machine->created_at,

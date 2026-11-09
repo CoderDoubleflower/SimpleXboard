@@ -1,22 +1,22 @@
-# xboard-node v1.13 核心生命周期修复
+# xboard-node v1.13 的 SimpleXboard 兼容补丁
 
-本目录的补丁配合 SimpleXboard 的核心就绪状态展示使用。面板升级会修正监控判定；节点自动从空用户状态恢复，需要同时更新节点二进制。
+本目录的补丁配合 SimpleXboard 的核心就绪状态展示及出站管理使用。面板升级不会替换 VPS 上的节点二进制；需要更新节点端才能应用生命周期修复与出站选择。
 
 ## 固定来源
 
 - 上游：`https://github.com/cedar2025/Xboard-Node`
 - 标签：`v1.13`
 - 基线提交：`0a29338e1f102a462363ce3527417029f89bab28`
-- 补丁：`v1.13-core-lifecycle.patch`
-- 修复构建版本：`v1.13-simplexboard.1`，不是上游发布的新版本。
+- 按顺序应用：`v1.13-core-lifecycle.patch`、`v1.13-managed-outbounds.patch`
+- 当前修复构建版本：`v1.13-simplexboard.2`，不是上游发布的新版本。
 
-补丁只修改节点生命周期、同步状态衔接、就绪检查及对应测试；沿用上游 `go.mod` / `go.sum` 的核心和依赖版本。不要对其他版本强行应用此补丁，也不要用会拉取上游 `dev` 的原安装命令覆盖修复构建。
+第一份补丁修改节点生命周期、同步状态衔接及就绪检查；第二份增加默认出口、能力声明、出站变更后的单节点核心重建与对应测试。沿用上游 `go.mod` / `go.sum` 的核心和依赖版本。不要对其他版本强行应用这些补丁，也不要用会拉取上游 `dev` 的原安装命令覆盖修复构建。
 
 ## 获取经过验收的构建
 
-本仓库的 **Verify node core lifecycle** 工作流在同一固定源码上先复现原缺陷，再应用补丁、执行 Go 测试与竞态检查，最后运行实际 machine 多实例、singbox、VLESS + REALITY + Vision 和 mihomo v1.19.29 代理请求。
+本仓库的 **Verify node lifecycle and outbounds** 工作流在同一固定源码上先复现原缺陷，再应用两份补丁、执行 Go 测试与竞态检查，最后运行实际 machine 多实例、VLESS + REALITY + Vision、六类出站、出口切换及 UDP 请求。
 
-只有验收成功才会上传 `xboard-node-v1.13-simplexboard.1-linux-amd64` artifact，包含二进制和 SHA-256 校验文件。检查工作流对应的提交与结论，解压后执行 `sha256sum --check xboard-node.sha256`。这是 Linux amd64 构建；其他架构请从相同源码构建。CI artifact 保留 14 天。
+只有验收成功才会上传 `xboard-node-v1.13-simplexboard.2-linux-amd64` artifact，包含二进制和 SHA-256 校验文件。检查工作流对应的提交与结论，解压后执行 `sha256sum --check xboard-node.sha256`。这是 Linux amd64 构建；其他架构请从相同源码构建。CI artifact 保留 14 天。
 
 ## 本地构建
 
@@ -30,11 +30,13 @@ cd "$NODE_SOURCE"
 test "$(git rev-parse HEAD)" = 0a29338e1f102a462363ce3527417029f89bab28
 git apply --check "$PANEL_SOURCE/patches/xboard-node/v1.13-core-lifecycle.patch"
 git apply "$PANEL_SOURCE/patches/xboard-node/v1.13-core-lifecycle.patch"
+git apply --check "$PANEL_SOURCE/patches/xboard-node/v1.13-managed-outbounds.patch"
+git apply "$PANEL_SOURCE/patches/xboard-node/v1.13-managed-outbounds.patch"
 go test -p 2 -tags 'with_quic,with_utls,with_wireguard,with_acme,with_clash_api' ./...
-go test -p 2 -race -tags 'with_quic,with_utls,with_wireguard,with_acme,with_clash_api' ./internal/service ./internal/controlplane ./internal/machine ./cmd/xboard-node
+go test -p 2 -race -tags 'with_quic,with_utls,with_wireguard,with_acme,with_clash_api' ./internal/service ./internal/controlplane ./internal/machine ./internal/panel ./internal/kernel/singbox ./cmd/xboard-node
 CGO_ENABLED=0 go build -buildvcs=false -trimpath \
   -tags 'with_quic,with_utls,with_wireguard,with_acme,with_clash_api' \
-  -ldflags '-s -w -X main.version=v1.13-simplexboard.1' \
+  -ldflags '-s -w -X main.version=v1.13-simplexboard.2' \
   -o xboard-node ./cmd/xboard-node
 sha256sum xboard-node
 ```
@@ -50,3 +52,5 @@ sha256sum xboard-node
 部署后使用真实订阅完成一次 `0 → 1 → 0 → 1`：检查监听端口、就绪状态和实际代理请求；断开 WebSocket 时还应观察 REST 补偿后恢复。CI 在回环隔离环境中验证这些路径，公网防火墙、路由、DNS 和具体 VPS 环境应在部署后确认。
 
 完整根因与状态语义见 [修复说明](../../docs/node-core-lifecycle-fix.md)。
+
+出站功能的操作、兼容范围及升级顺序见[出站管理说明](../../docs/outbound-management.md)。更新出站配置会重建对应核心，纯成员变更仍使用既有更新路径；核心就绪不等于外部出口连通。
