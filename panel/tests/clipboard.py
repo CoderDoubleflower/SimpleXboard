@@ -288,14 +288,17 @@ def main():
                 passed('Subscription display page: native clipboard, ordinary HTTP and API rejection all copy the exact link')
 
                 page = open_page(path='/subscription')
-                page.evaluate('window.originalExecCommand = document.execCommand; document.execCommand = () => false')
+                page.evaluate('''() => {
+                  window.originalExecCommand = document.execCommand;
+                  document.execCommand = () => false;
+                }''')
                 page.locator('.copy-btn').click()
                 expect(page.locator('.copy-btn')).not_to_have_class(re.compile(r'\bcopied\b'))
                 expect(page.locator('#copy-status')).not_to_be_empty()
                 link = page.locator('#sub_url')
                 expect(link).to_be_focused()
                 assert link.evaluate('element => element.value.slice(element.selectionStart, element.selectionEnd)') == SUBSCRIPTION
-                page.evaluate('document.execCommand = window.originalExecCommand')
+                page.evaluate('() => { document.execCommand = window.originalExecCommand; }')
                 page.locator('.copy-btn').click()
                 expect(page.locator('.copy-btn')).to_have_class(re.compile(r'\bcopied\b'))
                 expect(page.locator('#copy-status')).to_have_text('')
