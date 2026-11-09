@@ -4,9 +4,11 @@ namespace App\Providers;
 
 use App\Models\Server;
 use App\Models\ServerRoute;
+use App\Models\ServerOutbound;
 use App\Models\User;
 use App\Observers\ServerObserver;
 use App\Observers\ServerRouteObserver;
+use App\Observers\ServerOutboundObserver;
 use App\Observers\UserObserver;
 use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
 
@@ -30,6 +32,7 @@ class EventServiceProvider extends ServiceProvider
         User::observe(UserObserver::class);
         Server::observe(ServerObserver::class);
         ServerRoute::observe(ServerRouteObserver::class);
+        ServerOutbound::observe(ServerOutboundObserver::class);
 
 
     }

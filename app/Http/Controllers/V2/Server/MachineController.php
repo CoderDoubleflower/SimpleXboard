@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ServerMachine;
 use App\Models\ServerMachineLoadHistory;
 use App\Services\ServerService;
+use App\Services\OutboundCapabilityService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -133,6 +134,8 @@ class MachineController extends Controller
         }
 
         $machine->forceFill(['last_seen_at' => now()->timestamp])->saveQuietly();
+
+        OutboundCapabilityService::remember(null, $machine, OutboundCapabilityService::advertised($request));
 
         return $machine;
     }

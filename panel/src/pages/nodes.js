@@ -2,14 +2,18 @@ import { h, icon, button, iconButton, badge, input, select, field, textarea, che
 import { data, bytes, datetime, relativeTime, nodeStatus, nodeConnections, protocolName, errorMessage } from '../format.js';
 import { nodePayload, gibValue } from '../domain.js';
 import { createRealityGenerator } from '../reality.js';
+import { hasCustomRouting, nodeOutboundLabel, outboundProtocolName, outboundAddress } from '../outbounds.js';
+import { outboundsPanel } from './outbounds.js';
 
 export async function nodesPage(host, context) {
   const { api, signal, navigate } = context;
   let nodes = [];
   let machines = [];
+  let outbounds = [];
   let nodeError = null;
   let machineError = null;
-  let active = context.query.get('tab') === 'machines' ? 'machines' : 'nodes';
+  let outboundError = null;
+  let active = ['machines', 'outbounds'].includes(context.query.get('tab')) ? context.query.get('tab') : 'nodes';
   const content = h('div', {}, loading());
   const tabBar = h('div');
   const search = input('node-search', '', { type: 'search', placeholder: '搜索节点名称、地址或协议', 'aria-label': '搜索节点' });
@@ -19,23 +23,29 @@ export async function nodesPage(host, context) {
     search.focus({ preventScroll: true });
     search.setSelectionRange(selection, selection);
   });
-  host.append(pageHeader('VPS 与节点', '管理机器接入、节点连接参数及其可用状态。', [
+  host.append(pageHeader('VPS 与节点', '管理机器接入、节点入口、出站及其可用状态。', [
     button('添加 VPS', { icon: 'plus', onClick: () => machineEditor(null, context, load) }),
-    button('添加节点', { icon: 'plus', tone: 'primary', onClick: () => nodeEditor(null, machines, context, load) }),
+    button('添加节点', { icon: 'plus', tone: 'primary', onClick: () => nodeEditor(null, machines, { items: outbounds, error: outboundError }, context, load) }),
   ]), tabBar, content);
 
   async function load() {
-    content.replaceChildren(loading('正在读取节点和机器…'));
-    const results = await Promise.allSettled([api.get('server/manage/getNodes', {}, { signal }), api.get('server/machine/fetch', {}, { signal })]);
+    content.replaceChildren(loading('正在读取节点、机器和出站…'));
+    const results = await Promise.allSettled([api.get('server/manage/getNodes', {}, { signal }), api.get('server/machine/fetch', {}, { signal }), api.get('server/outbound/fetch', {}, { signal })]);
     if (signal.aborted) return;
     if (results[0].status === 'fulfilled') { nodes = data(results[0].value) ?? []; nodeError = null; } else nodeError = results[0].reason;
     if (results[1].status === 'fulfilled') { machines = data(results[1].value) ?? []; machineError = null; } else machineError = results[1].reason;
+    if (results[2].status === 'fulfilled') { outbounds = data(results[2].value) ?? []; outboundError = null; } else outboundError = results[2].reason;
     render();
   }
 
   function render() {
-    tabBar.replaceChildren(tabs([{ value: 'nodes', label: `节点 ${nodes.length}` }, { value: 'machines', label: `VPS ${machines.length}` }], active, value => { active = value; render(); }));
+    tabBar.replaceChildren(tabs([{ value: 'nodes', label: `节点 ${nodes.length}` }, { value: 'machines', label: `VPS ${machines.length}` }, { value: 'outbounds', label: `出站 ${outbounds.length}` }], active, value => { active = value; render(); }));
     content.replaceChildren();
+    if (active === 'outbounds') {
+      if (outboundError) { content.append(errorState(outboundError, load)); return; }
+      content.append(outboundsPanel(outbounds, context, load));
+      return;
+    }
     if (active === 'machines') {
       if (machineError) { content.append(errorState(machineError, load)); return; }
       if (!machines.length) { content.append(panel(null, emptyState('接入第一台 VPS', '创建机器记录，复制接入命令，在目标 VPS 安装节点服务。', button('添加 VPS', { tone: 'primary', icon: 'plus', onClick: () => machineEditor(null, context, load) })))); return; }
@@ -47,10 +57,10 @@ export async function nodesPage(host, context) {
     const filtered = nodes.filter(node => `${node.name} ${node.host} ${protocolName(node)}`.toLowerCase().includes(term));
     const toolbar = h('div', { class: 'toolbar' }, h('div', { class: 'search-field' }, icon('search'), search), h('span', { class: 'toolbar-spacer' }), h('span', { class: 'toolbar-note' }, '停用会撤销授权；隐藏仅影响订阅展示'));
     const body = h('div', {}, toolbar);
-    if (!filtered.length) body.append(emptyState(term ? '没有找到匹配节点' : '添加一个连接入口', term ? '试试其他名称、主机地址或协议。' : '支持 VLESS + REALITY、Hysteria2，也可维护已有协议配置。', term ? null : button('添加节点', { tone: 'primary', icon: 'plus', onClick: () => nodeEditor(null, machines, context, load) })));
+    if (!filtered.length) body.append(emptyState(term ? '没有找到匹配节点' : '添加一个连接入口', term ? '试试其他名称、主机地址或协议。' : '支持 VLESS + REALITY、Hysteria2，也可维护已有协议配置。', term ? null : button('添加节点', { tone: 'primary', icon: 'plus', onClick: () => nodeEditor(null, machines, { items: outbounds, error: outboundError }, context, load) })));
     else body.append(table([
       { label: '节点', render: node => h('div', { class: 'row-identity' }, h('strong', {}, node.name), h('span', { class: 'mono muted' }, `${node.host}:${node.port}`), node.machine_id ? h('small', { class: 'muted' }, machines.find(machine => Number(machine.id) === Number(node.machine_id))?.name ?? `VPS #${node.machine_id}`) : null) },
-      { label: '协议', render: node => h('span', { class: 'protocol-tag' }, protocolName(node)) },
+      { label: '协议 / 出站', render: node => h('div', { class: 'stack-sm node-outbound' }, h('span', { class: 'protocol-tag' }, protocolName(node)), h('small', { class: 'muted' }, `出口：${nodeOutboundLabel(node, outbounds)}`)) },
       { label: '运行状态', className: 'runtime-cell', render: node => {
         const status = nodeStatus(node);
         const connection = nodeConnections(node);
@@ -68,14 +78,15 @@ export async function nodesPage(host, context) {
       { label: '启用', className: 'compact-cell', render: node => toggleSwitch(`启用节点 ${node.name}`, node.enabled !== false && node.enabled !== 0, async enabled => { await api.post('server/manage/update', { id: node.id, enabled }); toast(enabled ? '节点已启用' : '节点已停用'); await load(); }) },
       { label: '订阅展示', className: 'compact-cell', render: node => toggleSwitch(`在订阅中展示 ${node.name}`, Boolean(node.show), async show => { await api.post('server/manage/update', { id: node.id, show: show ? 1 : 0 }); toast(show ? '节点已在订阅中显示' : '节点已从订阅中隐藏'); await load(); }) },
       { label: '操作', className: 'actions-cell', render: node => h('div', { class: 'row-actions' },
-        iconButton(`编辑节点 ${node.name}`, 'edit', () => nodeEditor(node, machines, context, load)),
+        iconButton(`编辑节点 ${node.name}`, 'edit', () => nodeEditor(node, machines, { items: outbounds, error: outboundError }, context, load)),
         iconButton(`删除节点 ${node.name}`, 'trash', () => confirmAction({ title: '删除节点', description: `确认删除“${node.name}”？此节点的配置和成员授权会被移除，VPS 机器记录会保留。`, label: '删除节点', onConfirm: async () => { await api.post('server/manage/drop', { id: node.id }); toast('节点已删除'); await load(); } }), 'danger-text')) },
     ], filtered));
     content.append(panel(null, body));
     if (machineError) content.append(notice('VPS 列表暂不可读取，节点状态仍可独立查看。', 'warning'));
+    if (outboundError) content.append(notice('出站列表暂不可读取，已绑定的出站仍按编号显示。重新加载后可管理出站。', 'warning'));
   }
   await load();
-  if (!signal.aborted && context.query.get('create') === 'node') nodeEditor(null, machines, context, load);
+  if (!signal.aborted && context.query.get('create') === 'node') nodeEditor(null, machines, { items: outbounds, error: outboundError }, context, load);
   if (!signal.aborted && context.query.get('create') === 'machine') machineEditor(null, context, load);
 }
 
@@ -134,7 +145,7 @@ function defaultProtocol(type) {
   return {};
 }
 
-function nodeEditor(node, machines, context, reload) {
+function nodeEditor(node, machines, outboundState, context, reload) {
   let editor;
   let generation = null;
   let saving = false;
@@ -147,6 +158,49 @@ function nodeEditor(node, machines, context, reload) {
   const advanced = {};
   for (const key of ['route_ids', 'excludes', 'ips', 'parent_id', 'spectific_key', 'custom_routes', 'custom_outbounds', 'cert_config']) if (node?.[key] !== undefined && node[key] !== null) advanced[key] = node[key];
   const advancedJson = textarea('advanced_json', JSON.stringify(advanced, null, 2), { rows: 7, spellcheck: false, class: 'input mono code-input' });
+  const machine = select('machine_id', [{ value: '', label: '独立节点（不绑定 VPS）' }, ...machines.map(item => ({ value: item.id, label: item.name }))], node?.machine_id ?? '');
+  const outboundOptions = [{ value: '', label: '直连（使用当前 VPS 出口）' }, ...outboundState.items.map(item => ({ value: item.id, label: `${item.name} · ${outboundProtocolName(item)} · ${outboundAddress(item)}` }))];
+  if (node?.outbound_id != null && !outboundState.items.some(item => Number(item.id) === Number(node.outbound_id))) {
+    outboundOptions.push({ value: node.outbound_id, label: `已选出站 #${node.outbound_id}（暂不可读取）` });
+  }
+  const outbound = select('outbound_id', outboundOptions, node?.outbound_id ?? '');
+  const outboundHint = h('div', { class: 'stack-sm' });
+
+  function describeOutbound() {
+    let advancedSettings;
+    try { advancedSettings = JSON.parse(advancedJson.value || '{}'); } catch { advancedSettings = advanced; }
+    // Omitted advanced keys are retained by nodePayload; the hint must describe the same effective settings.
+    const hasLegacy = hasCustomRouting({ ...advanced, ...advancedSettings });
+    outbound.options[0].textContent = hasLegacy ? '不选托管出站（保留高级配置）' : '直连（使用当前 VPS 出口）';
+    const selected = outboundState.items.find(item => String(item.id) === outbound.value);
+    const supported = machine.value ? machines.find(item => String(item.id) === machine.value)?.managed_outbound_supported === true : !node?.machine_id && node?.managed_outbound_supported === true;
+    const retained = Boolean(node?.outbound_id != null && String(node.outbound_id) === outbound.value && String(node.machine_id ?? '') === machine.value);
+    for (const option of outbound.options) {
+      const original = node?.outbound_id != null && option.value === String(node.outbound_id) && String(node.machine_id ?? '') === machine.value;
+      option.disabled = option.value !== '' && option.value !== outbound.value && !original && (Boolean(outboundState.error) || !supported);
+    }
+    outbound.setCustomValidity('');
+    const messages = [];
+    if (outboundState.error) messages.push(notice('出站列表暂不可读取。当前选择已保留，请关闭后重新加载再选择其他出站。', 'warning'));
+    if (outbound.value && hasLegacy) {
+      const message = '所选出站与高级路由配置冲突。请先将高级配置中的 route_ids、custom_routes 和 custom_outbounds 清空为 []，或取消选择出站。';
+      outbound.setCustomValidity(message);
+      messages.push(notice(message, 'error'));
+    } else if (outbound.value) {
+      messages.push(notice(`用户流量经本节点转发至“${selected?.name ?? `出站 #${outbound.value}`}”。修改出站可能短暂中断连接；出口不可用时不会自动改为直连。`));
+    } else if (hasLegacy) messages.push(notice('此节点的出口由高级路由配置管理。若要改用上方出站或直连，请先明确清空原有路由；保存其他字段会保留高级配置。', 'warning'));
+    else messages.push(h('p', { class: 'field-hint' }, '不选择出站时，用户流量直接从当前 VPS 访问目标。先在“出站”标签页保存现成节点，即可在此选择。'));
+    if (!supported && !retained) {
+      const message = machine.value || node ? '请先升级并接入支持出站管理的节点端（sing-box），再选择出站。' : '独立节点请先创建并接入支持出站管理的节点端（sing-box），然后编辑此节点选择出站。';
+      messages.push(notice(message, 'warning'));
+      if (outbound.value) outbound.setCustomValidity(message);
+    }
+    outboundHint.replaceChildren(...messages);
+  }
+  outbound.addEventListener('change', describeOutbound);
+  machine.addEventListener('change', describeOutbound);
+  advancedJson.addEventListener('input', describeOutbound);
+  describeOutbound();
   const content = h('div', { class: 'stack-lg' },
     h('div', { class: 'form-grid' },
       field('节点名称', input('name', node?.name ?? '', { required: true, maxlength: 255, placeholder: '例如：东京 · REALITY' }), { required: true }),
@@ -154,12 +208,13 @@ function nodeEditor(node, machines, context, reload) {
       field('连接地址', input('host', node?.host ?? '', { required: true, placeholder: 'node.example.com 或 IP' }), { required: true }),
       field('连接端口', input('port', node?.port ?? '443', { required: true, placeholder: '443', inputmode: 'numeric' }), { required: true, hint: '客户端连接使用的端口。' }),
       field('服务监听端口', input('server_port', node?.server_port ?? '443', { type: 'number', min: 1, max: 65535, required: true }), { required: true }),
-      field('绑定 VPS', select('machine_id', [{ value: '', label: '独立节点（不绑定 VPS）' }, ...machines.map(machine => ({ value: machine.id, label: machine.name }))], node?.machine_id ?? '')),
+      field('绑定 VPS', machine),
       field('节点流量上限（GiB）', input('quota', gibValue(node?.transfer_enable), { type: 'number', min: 0, step: 'any', placeholder: '不限' }), { hint: '按实际流量计算，不受倍率影响；留空或 0 均为不限。' }),
       field('流量倍率（×）', input('rate', node?.rate ?? 1, { type: 'number', min: 0, max: 100, step: '0.01', inputmode: 'decimal', required: true }), { required: true, hint: '0–100，最多 2 位小数。成员额度按此倍率累计，0× 不扣额度；仅对后续收到的上报生效。' }),
       field('标签', input('tags', (node?.tags ?? []).join(', '), { placeholder: '地区、用途等，用逗号分隔' }), { wide: true })),
     h('div', { class: 'checkbox-grid' }, checkbox('enabled', '启用节点', node?.enabled !== false && node?.enabled !== 0, '停用后不再向此节点授权成员。'), checkbox('show', '在订阅中展示', node ? Boolean(node.show) : true, '隐藏只影响订阅内容，不等同于停用。')),
     h('section', { class: 'form-section' }, h('h3', {}, '连接与安全'), protocolBody),
+    h('section', { class: 'form-section stack-lg' }, h('h3', {}, '流量出口'), field('出站节点', outbound), outboundHint),
     h('details', { class: 'advanced-section' }, h('summary', {}, icon('settings'), '高级连接配置'),
       h('div', { class: 'stack-lg advanced-content' },
         field('协议参数 JSON', protocolJson, { hint: '维护传输、复用等额外参数。上方已填写的连接字段优先，其他字段保持原值。' }),

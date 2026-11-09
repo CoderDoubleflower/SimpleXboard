@@ -36,7 +36,8 @@ class ServerService
             'core_ready',
             'control_online',
             'control_recent',
-            'machine_online'
+            'machine_online',
+            'managed_outbound_supported',
         ]);
     }
 
@@ -75,7 +76,8 @@ class ServerService
                 $server->port = (int) $server->port;
             }
             $server->password = $server->generateServerPassword($user);
-            return $server;
+            // Server-side routing credentials have no place in client subscriptions.
+            return $server->makeHidden(['custom_outbounds', 'custom_routes', 'outbound']);
         })->toArray();
 
         return $servers;
@@ -85,6 +87,7 @@ class ServerService
     public static function getAvailableUsers(Server $node): Collection
     {
         if (!$node->isAvailable()) return collect();
+        if ($node->outbound_id && !OutboundCapabilityService::supportsNode($node)) return collect();
         return User::eligible()->authorizedFor($node)
             ->select(['id', 'uuid', 'speed_limit', 'device_limit'])->toBase()->get();
     }
@@ -375,7 +378,7 @@ class ServerService
             }
         }
 
-        return $response;
+        return app(ServerOutboundService::class)->appendNodeConfig($node, $response);
     }
 
     /**

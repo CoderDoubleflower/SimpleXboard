@@ -27,7 +27,7 @@ class ServerObserver
         $fullSync = $server->wasChanged(['enabled', 'transfer_enable']) || $wasAvailable !== $server->isAvailable();
         $configChanged = $server->wasChanged([
             'server_port', 'protocol_settings', 'type', 'route_ids',
-            'custom_outbounds', 'custom_routes', 'cert_config',
+            'custom_outbounds', 'custom_routes', 'cert_config', 'outbound_id',
         ]);
         $machineIds = $server->wasChanged(['machine_id', 'enabled'])
             ? array_unique(array_filter([$server->machine_id, $server->getOriginal('machine_id')])) : [];

@@ -1,0 +1,831 @@
+diff --git a/internal/controlplane/machine.go b/internal/controlplane/machine.go
+index 8bdeed7..6d93643 100644
+--- a/internal/controlplane/machine.go
++++ b/internal/controlplane/machine.go
+@@ -76,7 +76,7 @@ func (p *MachinePanelControlPlane) Initial(
+ 	if err != nil {
+ 		return Bootstrap{}, fmt.Errorf("machine initial users: %w", err)
+ 	}
+-	bootstrap.Config, err = model.NodeSpecFromPanelValidated(configSnapshot, p.kcfg)
++	bootstrap.Config, err = nodeSpecForRuntime(configSnapshot, p.kcfg)
+ 	if err != nil {
+ 		return Bootstrap{}, fmt.Errorf("machine initial config normalize: %w", err)
+ 	}
+@@ -109,7 +109,7 @@ func (p *MachinePanelControlPlane) Poll(ctx context.Context) (Snapshot, error) {
+ 		return Snapshot{}, ctx.Err()
+ 	default:
+ 	}
+-	nodeSpec, err := model.NodeSpecFromPanelValidated(configSnapshot, p.kcfg)
++	nodeSpec, err := nodeSpecForRuntime(configSnapshot, p.kcfg)
+ 	if err != nil {
+ 		return Snapshot{}, fmt.Errorf("machine poll normalize: %w", err)
+ 	}
+diff --git a/internal/controlplane/panel.go b/internal/controlplane/panel.go
+index 7f70d95..906e888 100644
+--- a/internal/controlplane/panel.go
++++ b/internal/controlplane/panel.go
+@@ -60,7 +60,7 @@ func (p *PanelControlPlane) Initial(ctx context.Context, metricsFn func() map[st
+ 	if err != nil {
+ 		return Bootstrap{}, fmt.Errorf("initial user fetch: %w", err)
+ 	}
+-	bootstrap.Config, err = model.NodeSpecFromPanelValidated(configSnapshot, p.kcfg)
++	bootstrap.Config, err = nodeSpecForRuntime(configSnapshot, p.kcfg)
+ 	if err != nil {
+ 		return Bootstrap{}, fmt.Errorf("initial config normalize: %w", err)
+ 	}
+@@ -82,7 +82,7 @@ func (p *PanelControlPlane) Poll(ctx context.Context) (Snapshot, error) {
+ 		return Snapshot{}, ctx.Err()
+ 	default:
+ 	}
+-	nodeSpec, err := model.NodeSpecFromPanelValidated(configSnapshot, p.kcfg)
++	nodeSpec, err := nodeSpecForRuntime(configSnapshot, p.kcfg)
+ 	if err != nil {
+ 		return Snapshot{}, fmt.Errorf("poll config normalize: %w", err)
+ 	}
+@@ -163,7 +163,7 @@ func TranslateWSEvent(event panel.WSEvent, kcfg config.KernelConfig) (Event, err
+ 	translated := Event{Type: EventType(event.Type), DeltaAction: event.DeltaAction, DeviceUsers: event.DeviceUsers}
+ 	if event.Config != nil {
+ 		var err error
+-		translated.Config, err = model.NodeSpecFromPanelValidated(event.Config, kcfg)
++		translated.Config, err = nodeSpecForRuntime(event.Config, kcfg)
+ 		if err != nil {
+ 			return Event{}, fmt.Errorf("translate node config: %w", err)
+ 		}
+@@ -177,6 +177,22 @@ func TranslateWSEvent(event panel.WSEvent, kcfg config.KernelConfig) (Event, err
+ 	return translated, nil
+ }
+ 
++// Explicit managed defaults must reach the serialized lifecycle even when
++// invalid. Discarding them here would leave the previous (possibly direct)
++// config serving traffic. The service validates the complete desired spec
++// before applying it, stops on rejection, and reports the error for recovery.
++// Configs without the new field retain their legacy early-validation behavior.
++func nodeSpecForRuntime(nc *panel.NodeConfig, kcfg config.KernelConfig) (*model.NodeSpec, error) {
++	spec := model.NodeSpecFromPanel(nc)
++	if spec != nil && spec.DefaultOutbound != "" {
++		return spec, nil
++	}
++	if err := model.ValidateNodeSpec(spec, kcfg); err != nil {
++		return nil, err
++	}
++	return spec, nil
++}
++
+ func (p *panelPushClient) Run(ctx context.Context) { p.inner.Run(ctx) }
+ func (p *panelPushClient) IsConnected() bool       { return p.inner.IsConnected() }
+ func (p *panelPushClient) SendDeviceReport(devices map[int][]string) {
+diff --git a/internal/kernel/kernel.go b/internal/kernel/kernel.go
+index 474f3ff..92cf3f6 100644
+--- a/internal/kernel/kernel.go
++++ b/internal/kernel/kernel.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"crypto/sha256"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"sort"
+ 
+@@ -11,6 +12,10 @@ import (
+ 	"golang.org/x/time/rate"
+ )
+ 
++// ErrRestartRequired asks the service's serialized lifecycle to replace the
++// affected core. The caller must stop its old listener before calling Start.
++var ErrRestartRequired = errors.New("kernel configuration requires restart")
++
+ type Capabilities struct {
+ 	PerUserSpeedLimit    bool
+ 	DeviceLimit          bool
+diff --git a/internal/kernel/singbox/config.go b/internal/kernel/singbox/config.go
+index fe11766..52eb1f0 100644
+--- a/internal/kernel/singbox/config.go
++++ b/internal/kernel/singbox/config.go
+@@ -74,6 +74,11 @@ func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.Use
+ 	}
+ 
+ 	mergeCustomSingbox(cfg, kcfg)
++	// An explicit panel default owns the final route. Legacy local custom
++	// defaults retain their behavior when the new field is absent.
++	if nc.DefaultOutbound != "" {
++		cfg["route"].(M)["final"] = nc.DefaultOutbound
++	}
+ 	return cfg
+ }
+ 
+@@ -132,7 +137,7 @@ func outboundConfigToSingbox(oc model.OutboundConfig) M {
+ 	}
+ 
+ 	if oc.ProxyTag != "" {
+-		m["proxy_tag"] = oc.ProxyTag
++		m["detour"] = oc.ProxyTag
+ 	}
+ 	return m
+ }
+diff --git a/internal/kernel/singbox/outbound_test.go b/internal/kernel/singbox/outbound_test.go
+new file mode 100644
+index 0000000..85eb830
+--- /dev/null
++++ b/internal/kernel/singbox/outbound_test.go
+@@ -0,0 +1,204 @@
++package singbox
++
++import (
++	"context"
++	"crypto/ecdh"
++	"crypto/rand"
++	"encoding/base64"
++	"encoding/json"
++	"errors"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"syscall"
++	"testing"
++
++	"github.com/cedar2025/xboard-node/internal/config"
++	"github.com/cedar2025/xboard-node/internal/kernel"
++	"github.com/cedar2025/xboard-node/internal/model"
++	box "github.com/sagernet/sing-box"
++	"github.com/sagernet/sing-box/include"
++	"github.com/sagernet/sing-box/option"
++	singJSON "github.com/sagernet/sing/common/json"
++)
++
++func outboundRuntimeNode() *model.NodeSpec {
++	return &model.NodeSpec{Protocol: "socks", ListenIP: "127.0.0.1", ServerPort: 0}
++}
++
++func testSocksOutbound(address string) model.OutboundConfig {
++	return model.OutboundConfig{Tag: "sx-outbound-7", Protocol: "socks", Settings: map[string]any{"server": address, "server_port": 1080}}
++}
++
++func startOutboundTestCore(t *testing.T, core *SingBox, node *model.NodeSpec, users []model.UserSpec) {
++	t.Helper()
++	if err := core.Start(node, users, kernel.TLSCert{}); err != nil {
++		// Some local sandboxes prohibit NETLINK_ROUTE, used by sing-box's
++		// network monitor. CI must run these real-core tests without skipping.
++		if runtime.GOOS == "linux" && errors.Is(err, syscall.EPERM) && os.Getenv("CI") == "" {
++			t.Skipf("local sandbox denies sing-box network monitor; required in CI: %v", err)
++		}
++		t.Fatal(err)
++	}
++	t.Cleanup(core.Stop)
++}
++
++func TestManagedOutboundParsesWithPinnedCore(t *testing.T) {
++	key, err := ecdh.X25519().GenerateKey(rand.Reader)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, outbound := range []model.OutboundConfig{
++		{Tag: "sx-outbound-1", Protocol: "vless", Settings: map[string]any{
++			"server": "192.0.2.1", "server_port": 443, "uuid": "11111111-1111-4111-8111-111111111111", "flow": "xtls-rprx-vision",
++			"tls": map[string]any{"enabled": true, "server_name": "www.example.com", "utls": map[string]any{"enabled": true, "fingerprint": "chrome"},
++				"reality": map[string]any{"enabled": true, "public_key": base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), "short_id": "0123456789abcdef"}},
++		}},
++		{Tag: "sx-outbound-2", Protocol: "hysteria2", Settings: map[string]any{
++			"server": "192.0.2.2", "server_port": 8443, "password": "outbound-test-password",
++			"tls":  map[string]any{"enabled": true, "server_name": "example.com"},
++			"obfs": map[string]any{"type": "salamander", "password": "obfs-test-password"},
++		}},
++		{Tag: "sx-outbound-3", Protocol: "socks", Settings: map[string]any{
++			"server": "192.0.2.3", "server_port": 1080, "version": "5", "username": "user", "password": "outbound-test-password",
++		}},
++		{Tag: "sx-outbound-4", Protocol: "socks", Settings: map[string]any{
++			"server": "192.0.2.4", "server_port": 1080, "version": "5",
++		}},
++		{Tag: "sx-outbound-5", Protocol: "shadowsocks", Settings: map[string]any{
++			"server": "192.0.2.5", "server_port": 8388, "method": "aes-128-gcm", "password": "outbound-test-password",
++		}},
++		{Tag: "sx-outbound-6", Protocol: "trojan", Settings: map[string]any{
++			"server": "192.0.2.6", "server_port": 443, "password": "outbound-test-password",
++			"tls": map[string]any{"enabled": true, "server_name": "example.com"},
++		}},
++		{Tag: "sx-outbound-7", Protocol: "vmess", Settings: map[string]any{
++			"server": "192.0.2.7", "server_port": 443, "uuid": "11111111-1111-4111-8111-111111111111", "security": "auto", "alter_id": 0,
++			"tls": map[string]any{"enabled": true, "server_name": "example.com"},
++		}},
++	} {
++		t.Run(outbound.Protocol, func(t *testing.T) {
++			node := outboundRuntimeNode()
++			node.DefaultOutbound = outbound.Tag
++			node.CustomOutbounds = []model.OutboundConfig{outbound}
++			generated := buildConfig(config.KernelConfig{Type: "singbox", LogLevel: "error"}, node, testUsers, kernel.TLSCert{})
++			if final := generated["route"].(M)["final"]; final != outbound.Tag {
++				t.Fatalf("default is %v", final)
++			}
++			if direct := generated["outbounds"].([]M)[0]; direct["tag"] != "direct" || direct["type"] != "direct" {
++				t.Fatalf("direct outbound was replaced: %#v", direct)
++			}
++			data, err := json.Marshal(generated)
++			if err != nil {
++				t.Fatal(err)
++			}
++			ctx := include.Context(context.Background())
++			opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, data)
++			if err != nil {
++				t.Fatalf("pinned core rejected generated options: %v", err)
++			}
++			instance, err := box.New(box.Options{Context: ctx, Options: opts})
++			if err != nil {
++				t.Fatalf("pinned core rejected outbound construction: %v", err)
++			}
++			defer instance.Close()
++		})
++	}
++}
++
++func TestDefaultOutboundPreservesLegacyCustomDefault(t *testing.T) {
++	customPath := filepath.Join(t.TempDir(), "custom.json")
++	if err := os.WriteFile(customPath, []byte(`{"route":{"final":"block"}}`), 0600); err != nil {
++		t.Fatal(err)
++	}
++	kcfg := config.KernelConfig{CustomConfig: customPath}
++	node := outboundRuntimeNode()
++	if got := buildConfig(kcfg, node, testUsers, kernel.TLSCert{})["route"].(M)["final"]; got != "block" {
++		t.Fatalf("legacy custom default changed: %v", got)
++	}
++	node.DefaultOutbound = "sx-outbound-7"
++	node.CustomOutbounds = []model.OutboundConfig{testSocksOutbound("192.0.2.1")}
++	if got := buildConfig(kcfg, node, testUsers, kernel.TLSCert{})["route"].(M)["final"]; got != "sx-outbound-7" {
++		t.Fatalf("custom file overrode explicit panel default: %v", got)
++	}
++}
++
++func TestSingBoxOutboundChangesRequireRestart(t *testing.T) {
++	for _, name := range []string{"add", "address", "default", "remove"} {
++		t.Run(name, func(t *testing.T) {
++			node := outboundRuntimeNode()
++			if name != "add" {
++				node.CustomOutbounds = []model.OutboundConfig{testSocksOutbound("192.0.2.1")}
++				node.DefaultOutbound = "sx-outbound-7"
++			}
++			s := New(config.KernelConfig{Type: "singbox", LogLevel: "error"})
++			startOutboundTestCore(t, s, node, testUsers)
++			next := *node
++			switch name {
++			case "add":
++				next.CustomOutbounds = []model.OutboundConfig{testSocksOutbound("192.0.2.1")}
++				next.DefaultOutbound = "sx-outbound-7"
++			case "address":
++				next.CustomOutbounds = []model.OutboundConfig{testSocksOutbound("192.0.2.2")}
++			case "default":
++				next.DefaultOutbound = "direct"
++			case "remove":
++				next.DefaultOutbound = ""
++				next.CustomOutbounds = nil
++			}
++			if err := s.Reload(&next, testUsers, kernel.TLSCert{}); !errors.Is(err, kernel.ErrRestartRequired) {
++				t.Fatalf("outbound change was silently accepted: %v", err)
++			}
++			if s.nodeConfig != node {
++				t.Fatal("unapplied desired configuration replaced the applied state")
++			}
++		})
++	}
++}
++
++func TestSingBoxUserUpdateKeepsOutboundsAndInstance(t *testing.T) {
++	node := outboundRuntimeNode()
++	node.CustomOutbounds = []model.OutboundConfig{testSocksOutbound("192.0.2.1")}
++	node.DefaultOutbound = "sx-outbound-7"
++	s := New(config.KernelConfig{Type: "singbox", LogLevel: "error"})
++	startOutboundTestCore(t, s, node, testUsers[:1])
++	instance, outboundHash := s.box, s.outboundHash
++	if _, _, err := s.UpdateUsers(testUsers); err != nil {
++		t.Fatal(err)
++	}
++	if s.box != instance || s.outboundHash != outboundHash {
++		t.Fatal("user-only change rebuilt the core or changed outbounds")
++	}
++}
++
++func TestSingBoxRoutingFailureIsNotReportedAsApplied(t *testing.T) {
++	node := outboundRuntimeNode()
++	s := New(config.KernelConfig{Type: "singbox", LogLevel: "error"})
++	startOutboundTestCore(t, s, node, testUsers)
++	next := *node
++	next.CustomRoutes = []map[string]any{{"rule_set": []string{"missing-ruleset"}, "outbound": "direct"}}
++	err := s.Reload(&next, testUsers, kernel.TLSCert{})
++	if err == nil || !strings.Contains(err.Error(), "update routing rules") {
++		t.Fatalf("routing error was swallowed: %v", err)
++	}
++	if s.nodeConfig != node {
++		t.Fatal("failed route configuration was recorded as applied")
++	}
++}
++
++func TestProxyTagCompilesToSingBoxDetour(t *testing.T) {
++	outbound := testSocksOutbound("192.0.2.1")
++	outbound.ProxyTag = "direct"
++	data, err := json.Marshal(outboundConfigToSingbox(outbound))
++	if err != nil {
++		t.Fatal(err)
++	}
++	opts, err := singJSON.UnmarshalExtendedContext[option.Outbound](include.Context(context.Background()), data)
++	if err != nil {
++		t.Fatalf("pinned core rejected chained outbound: %v", err)
++	}
++	if got := opts.Options.(*option.SOCKSOutboundOptions).Detour; got != "direct" {
++		t.Fatalf("chain reference lost: %q", got)
++	}
++}
+diff --git a/internal/kernel/singbox/singbox.go b/internal/kernel/singbox/singbox.go
+index 90189af..106b736 100644
+--- a/internal/kernel/singbox/singbox.go
++++ b/internal/kernel/singbox/singbox.go
+@@ -3,6 +3,7 @@ package singbox
+ import (
+ 	"bytes"
+ 	"context"
++	"crypto/sha256"
+ 	"encoding/json"
+ 	"fmt"
+ 	"sync"
+@@ -41,9 +42,10 @@ type SingBox struct {
+ 	ctx    context.Context
+ 	cancel context.CancelFunc
+ 
+-	users      []model.UserSpec
+-	nodeConfig *model.NodeSpec
+-	tls        kernel.TLSCert
++	users        []model.UserSpec
++	nodeConfig   *model.NodeSpec
++	tls          kernel.TLSCert
++	outboundHash string
+ 
+ 	// connTracker is our lightweight in-process byte/IP tracker.
+ 	// Created fresh on every Start (full restart).
+@@ -138,6 +140,7 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
+ 	s.users = users
+ 	s.nodeConfig = nodeConfig
+ 	s.tls = tls
++	s.outboundHash = outboundConfigHash(cfgMap)
+ 
+ 	// Fresh tracker on full restart.
+ 	s.connTracker = NewConnTracker(0)
+@@ -189,9 +192,9 @@ func recycleOldBox(oldBox *box.Box, oldCancel context.CancelFunc, oldCtx context
+ 	nlog.Core().Debug("sing-box: old instance recycled")
+ }
+ 
+-// Reload hot-swaps the inbound users and routing rules without restarting the box.
+-// Routes, outbounds, and the connTracker stay alive so in-flight connections
+-// continue to be tracked correctly.
++// Reload hot-swaps inbound users and rules when possible. Outbound/default
++// changes need a full core replacement, owned by the service lifecycle so
++// listener teardown happens before Start and no kernel mutex is re-entered.
+ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
+ 	s.mu.Lock()
+ 	defer s.mu.Unlock()
+@@ -210,6 +213,9 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
+ 	if err != nil {
+ 		return fmt.Errorf("parse options: %w", err)
+ 	}
++	if outboundConfigHash(cfgMap) != s.outboundHash {
++		return kernel.ErrRestartRequired
++	}
+ 
+ 	im := service.FromContext[adapter.InboundManager](s.ctx)
+ 	if im == nil {
+@@ -223,7 +229,7 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
+ 
+ 	// Update routing rules
+ 	if err := router.UpdateRules(opts.Route.Rules, opts.Route.RuleSet); err != nil {
+-		nlog.Core().Debug("routing reload failed", "error", err)
++		return fmt.Errorf("update routing rules: %w", err)
+ 	} else {
+ 		nlog.Core().Debug("sing-box routing reloaded")
+ 	}
+@@ -314,6 +320,14 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
+ 	return nil
+ }
+ 
++// Called only after the complete generated config has been JSON-encoded
++// successfully, so these JSON-compatible subfields cannot fail to marshal.
++func outboundConfigHash(cfg M) string {
++	route, _ := cfg["route"].(M)
++	data, _ := json.Marshal([]any{cfg["outbounds"], route["final"]})
++	return fmt.Sprintf("%x", sha256.Sum256(data))
++}
++
+ // registerTracker wires the ConnTracker to the current Router exactly once.
+ // The ConnTracker handles both byte counting and optional rate limiting
+ // in a single wrapper, so no additional trackers are needed.
+diff --git a/internal/model/default_outbound_test.go b/internal/model/default_outbound_test.go
+new file mode 100644
+index 0000000..20f618f
+--- /dev/null
++++ b/internal/model/default_outbound_test.go
+@@ -0,0 +1,54 @@
++package model
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++
++	"github.com/cedar2025/xboard-node/internal/config"
++	"github.com/cedar2025/xboard-node/internal/panel"
++)
++
++func TestDefaultOutboundValidationAndRoundTrip(t *testing.T) {
++	for _, tc := range []struct {
++		name, kernel, tag, wantError string
++	}{
++		{name: "legacy", kernel: "singbox"},
++		{name: "direct", kernel: "singbox", tag: "direct"},
++		{name: "selected", kernel: "singbox", tag: "sx-outbound-7"},
++		{name: "trimmed", kernel: "singbox", tag: " sx-outbound-7 "},
++		{name: "unknown", kernel: "singbox", tag: "missing", wantError: "unknown outbound"},
++		{name: "case_sensitive", kernel: "singbox", tag: "SX-OUTBOUND-7", wantError: "unknown outbound"},
++		{name: "xray_legacy", kernel: "xray"},
++		{name: "xray_direct", kernel: "xray", tag: "direct"},
++		{name: "xray_managed", kernel: "xray", tag: "sx-outbound-7", wantError: "requires the singbox kernel"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			wire := &panel.NodeConfig{
++				Protocol: "vless", ServerPort: 17881, DefaultOutbound: tc.tag,
++				CustomOutbounds: []panel.OutboundConfig{{Tag: "sx-outbound-7", Protocol: "socks", Settings: map[string]any{"server": "192.0.2.1", "server_port": 1080}}},
++			}
++			data, err := json.Marshal(wire)
++			if err != nil {
++				t.Fatal(err)
++			}
++			var decoded panel.NodeConfig
++			if err := json.Unmarshal(data, &decoded); err != nil {
++				t.Fatal(err)
++			}
++			spec, err := NodeSpecFromPanelValidated(&decoded, config.KernelConfig{Type: tc.kernel})
++			if tc.wantError != "" {
++				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
++					t.Fatalf("expected %q, got %v", tc.wantError, err)
++				}
++				return
++			}
++			if err != nil {
++				t.Fatal(err)
++			}
++			if got := spec.ToPanel().DefaultOutbound; got != strings.TrimSpace(tc.tag) {
++				t.Fatalf("default lost in round trip: %q", got)
++			}
++		})
++	}
++}
+diff --git a/internal/model/panel.go b/internal/model/panel.go
+index c7d90d3..6db0ad4 100644
+--- a/internal/model/panel.go
++++ b/internal/model/panel.go
+@@ -1,6 +1,8 @@
+ package model
+ 
+ import (
++	"strings"
++
+ 	"github.com/cedar2025/xboard-node/internal/config"
+ 	"github.com/cedar2025/xboard-node/internal/panel"
+ )
+@@ -95,6 +97,7 @@ func NodeSpecFromPanel(nc *panel.NodeConfig) *NodeSpec {
+ 		Routes:              routes,
+ 		KernelType:          nc.KernelType,
+ 		KernelLogLevel:      nc.KernelLogLevel,
++		DefaultOutbound:     strings.TrimSpace(nc.DefaultOutbound),
+ 		CustomOutbounds:     outbounds,
+ 		CustomRoutes:        cloneMapSlice(nc.CustomRoutes),
+ 		CustomRouteRules:    customRouteRules,
+@@ -234,6 +237,7 @@ func (n *NodeSpec) ToPanel() *panel.NodeConfig {
+ 		Routes:              routes,
+ 		KernelType:          n.KernelType,
+ 		KernelLogLevel:      n.KernelLogLevel,
++		DefaultOutbound:     n.DefaultOutbound,
+ 		CustomOutbounds:     outbounds,
+ 		CustomRoutes:        cloneMapSlice(n.CustomRoutes),
+ 		CustomRouteRules:    customRouteRules,
+diff --git a/internal/model/types.go b/internal/model/types.go
+index 6b6b9ee..5f9edb5 100644
+--- a/internal/model/types.go
++++ b/internal/model/types.go
+@@ -12,6 +12,7 @@ type NodeSpec struct {
+ 
+ 	KernelType       string
+ 	KernelLogLevel   string
++	DefaultOutbound  string
+ 	CustomOutbounds  []OutboundConfig
+ 	CustomRoutes     []map[string]any
+ 	CustomRouteRules []CustomRouteRule
+diff --git a/internal/model/validate.go b/internal/model/validate.go
+index 6910658..b037cdc 100644
+--- a/internal/model/validate.go
++++ b/internal/model/validate.go
+@@ -30,6 +30,9 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
+ 	}
+ 	additionalTags := additionalTagNames(additionalOutboundSources)
+ 	availableTags := buildAvailableOutboundTags(n.CustomOutbounds, additionalTags)
++	if err := validateDefaultOutbound(n, kernelType, additionalTags); err != nil {
++		return err
++	}
+ 	if err := ValidateCustomOutboundsForKernel(n.CustomOutbounds, kernelType, additionalTags); err != nil {
+ 		return fmt.Errorf("validate custom outbounds: %w", err)
+ 	}
+@@ -42,6 +45,32 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
+ 	return nil
+ }
+ 
++// Default outbound selection is currently implemented by the sing-box adapter.
++// Validate exact tag spelling: the kernel's outbound lookup is case-sensitive.
++func validateDefaultOutbound(n *NodeSpec, kernelType string, additionalTags []string) error {
++	tag := strings.TrimSpace(n.DefaultOutbound)
++	if tag == "" || tag == "direct" {
++		return nil
++	}
++	if kernelType != "singbox" {
++		return fmt.Errorf("default_outbound requires the singbox kernel; current kernel is %q", kernelType)
++	}
++	if tag == "block" {
++		return nil
++	}
++	for _, outbound := range n.CustomOutbounds {
++		if outbound.Tag == tag {
++			return nil
++		}
++	}
++	for _, candidate := range additionalTags {
++		if candidate == tag {
++			return nil
++		}
++	}
++	return fmt.Errorf("default_outbound references unknown outbound %q", tag)
++}
++
+ // singboxUnsupportedTransports lists transport types that sing-box does not support.
+ var singboxUnsupportedTransports = map[string]bool{
+ 	"xhttp":     true,
+diff --git a/internal/panel/client.go b/internal/panel/client.go
+index a725afc..3ce6227 100644
+--- a/internal/panel/client.go
++++ b/internal/panel/client.go
+@@ -435,6 +435,7 @@ func (c *Client) doRequest(method, path string, body []byte, ifNoneMatch string)
+ 
+ 	req.Header.Set("Content-Type", "application/json")
+ 	req.Header.Set("Accept", "application/json")
++	req.Header.Set("X-SimpleXboard-Features", "managed-outbound-v1")
+ 	if ifNoneMatch != "" {
+ 		req.Header.Set("If-None-Match", ifNoneMatch)
+ 	}
+diff --git a/internal/panel/outbound_capability_test.go b/internal/panel/outbound_capability_test.go
+new file mode 100644
+index 0000000..c925cbd
+--- /dev/null
++++ b/internal/panel/outbound_capability_test.go
+@@ -0,0 +1,54 @@
++package panel
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/cedar2025/xboard-node/internal/config"
++)
++
++func TestManagedOutboundCapabilityOnAuthenticatedRequests(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if got := r.Header.Get("X-SimpleXboard-Features"); got != "managed-outbound-v1" {
++			t.Errorf("missing feature header on %s: %q", r.URL.Path, got)
++		}
++		token := r.URL.Query().Get("token")
++		if r.Method == http.MethodPost {
++			var body map[string]any
++			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
++				t.Error(err)
++			}
++			token, _ = body["token"].(string)
++		}
++		if token != "test-token" {
++			t.Error("request is not authenticated")
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"protocol":"vless","server_port":17881,"default_outbound":"sx-outbound-7","nodes":[],"users":[],"websocket":{"enabled":false}}`))
++	}))
++	defer server.Close()
++	for _, machineID := range []int{0, 12} {
++		client := NewClient(config.PanelConfig{URL: server.URL, Token: "test-token", NodeID: 7, MachineID: machineID})
++		if _, err := client.Handshake(); err != nil {
++			t.Fatal(err)
++		}
++		if got, err := client.GetConfig(); err != nil {
++			t.Fatal(err)
++		} else if got.DefaultOutbound != "sx-outbound-7" {
++			t.Fatalf("default_outbound lost in wire decoding: %q", got.DefaultOutbound)
++		}
++		if _, err := client.GetUsers(); err != nil {
++			t.Fatal(err)
++		}
++		if machineID != 0 {
++			if _, err := client.GetMachineNodes(); err != nil {
++				t.Fatal(err)
++			}
++			if _, err := client.ForNode(9).GetConfig(); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++}
+diff --git a/internal/panel/types.go b/internal/panel/types.go
+index 14a5cfd..bb0f39e 100644
+--- a/internal/panel/types.go
++++ b/internal/panel/types.go
+@@ -71,8 +71,8 @@ type MachineNode struct {
+ 
+ // MachineNodesResponse is the response from GET /api/v2/server/machine/nodes.
+ type MachineNodesResponse struct {
+-	Nodes      []MachineNode      `json:"nodes"`
+-	BaseConfig MachineBaseConfig  `json:"base_config"`
++	Nodes      []MachineNode     `json:"nodes"`
++	BaseConfig MachineBaseConfig `json:"base_config"`
+ }
+ 
+ // MachineBaseConfig holds polling intervals for machine mode.
+@@ -96,6 +96,7 @@ type NodeConfig struct {
+ 	// Kernel settings (Xboard extension)
+ 	KernelType       string            `json:"kernel_type,omitempty"`      // "singbox" or "xray"
+ 	KernelLogLevel   string            `json:"kernel_log_level,omitempty"` // "info", "warn", etc.
++	DefaultOutbound  string            `json:"default_outbound,omitempty"` // Empty keeps the existing direct default.
+ 	CustomOutbounds  []OutboundConfig  `json:"custom_outbounds,omitempty"`
+ 	CustomRoutes     []map[string]any  `json:"custom_routes,omitempty"`
+ 	CustomRouteRules []CustomRouteRule `json:"custom_route_rules,omitempty"`
+diff --git a/internal/service/outbound_lifecycle_test.go b/internal/service/outbound_lifecycle_test.go
+new file mode 100644
+index 0000000..876062e
+--- /dev/null
++++ b/internal/service/outbound_lifecycle_test.go
+@@ -0,0 +1,128 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/cedar2025/xboard-node/internal/config"
++	"github.com/cedar2025/xboard-node/internal/controlplane"
++	"github.com/cedar2025/xboard-node/internal/kernel"
++	"github.com/cedar2025/xboard-node/internal/model"
++	"github.com/cedar2025/xboard-node/internal/panel"
++)
++
++func managedOutboundSpec() *model.NodeSpec {
++	return &model.NodeSpec{
++		Protocol: "vless", ServerPort: 17881, DefaultOutbound: "sx-outbound-7",
++		CustomOutbounds: []model.OutboundConfig{{Tag: "sx-outbound-7", Protocol: "socks", Settings: map[string]any{"server": "192.0.2.1", "server_port": 1080}}},
++	}
++}
++
++func TestManagedOutboundInvalidRESTStopsPriorDirectCore(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		if strings.HasSuffix(r.URL.Path, "/config") {
++			_, _ = w.Write([]byte(`{"protocol":"vless","server_port":17881,"default_outbound":"missing"}`))
++		} else {
++			_, _ = w.Write([]byte(`{"users":[{"id":1,"uuid":"user-1"}],"websocket":{"enabled":false}}`))
++		}
++	}))
++	defer server.Close()
++	for _, machine := range []bool{false, true} {
++		t.Run(map[bool]string{false: "legacy_api", true: "machine_api"}[machine], func(t *testing.T) {
++			k := &fakeKernel{}
++			s := newTestService(k)
++			s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++			s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "user-1"}}, "")
++			pc := config.PanelConfig{URL: server.URL, NodeID: 1}
++			if machine {
++				pc.MachineID = 1
++				s.source = controlplane.NewMachinePanelControlPlane(panel.NewClient(pc), s.cfg.Kernel, nil, nil)
++			} else {
++				s.source = controlplane.NewPanelControlPlane(pc, config.WSConfig{}, s.cfg.Kernel)
++			}
++			snapshot, err := s.source.Poll(context.Background())
++			if err != nil {
++				t.Fatalf("managed intent discarded before lifecycle: %v", err)
++			}
++			s.applyPullResult(context.Background(), pullResult{config: snapshot.Config, configHash: computeConfigHash(snapshot.Config), users: snapshot.Users, userHash: computeUserHash(snapshot.Users)})
++			if status := s.Status(); k.running || status.Ready || status.State != "error" || !strings.Contains(status.Error, "unknown outbound") {
++				t.Fatalf("invalid managed exit left direct running: %+v", status)
++			}
++		})
++	}
++}
++
++func TestManagedOutboundRestartUsesSafeLifecycle(t *testing.T) {
++	for _, fail := range []bool{false, true} {
++		t.Run(map[bool]string{false: "success", true: "failure"}[fail], func(t *testing.T) {
++			k := &fakeKernel{}
++			s := newTestService(k)
++			s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++			s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "user-1"}}, "")
++			k.reloadErr = kernel.ErrRestartRequired
++			if fail {
++				k.startErr = errors.New("invalid outbound authentication")
++			}
++			s.handleWSEvent(context.Background(), controlplane.Event{Type: controlplane.EventSyncConfig, Config: managedOutboundSpec()})
++			if k.reloadCalls != 1 || k.startCalls != 2 || k.stopCalls < 1 {
++				t.Fatalf("unexpected lifecycle counts: starts=%d stops=%d reloads=%d", k.startCalls, k.stopCalls, k.reloadCalls)
++			}
++			status := s.Status()
++			if fail {
++				if k.running || status.Ready || status.State != "error" || status.AppliedUsers != 0 {
++					t.Fatalf("failed exit kept serving old direct configuration: %+v", status)
++				}
++				if s.lastConfig.DefaultOutbound != "sx-outbound-7" {
++					t.Fatal("failed desired exit was lost")
++				}
++			} else if !k.running || !status.Ready || s.appliedState.Config.DefaultOutbound != "sx-outbound-7" {
++				t.Fatalf("new exit was not applied: %+v", status)
++			}
++		})
++	}
++}
++
++func TestManagedOutboundInvalidPushStopsPriorDirectCore(t *testing.T) {
++	for _, name := range []string{"unknown", "xray"} {
++		t.Run(name, func(t *testing.T) {
++			k := &fakeKernel{}
++			s := newTestService(k)
++			if name == "xray" {
++				s.cfg.Kernel.Type = "xray"
++			}
++			s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 17881}
++			s.applyUserUpdate(context.Background(), []model.UserSpec{{ID: 1, UUID: "user-1"}}, "")
++			desired := managedOutboundSpec().ToPanel()
++			wantError := "requires the singbox kernel"
++			if name == "unknown" {
++				desired.DefaultOutbound = "missing"
++				wantError = "unknown outbound"
++			}
++			event, err := controlplane.TranslateWSEvent(panel.WSEvent{Type: panel.WSEventSyncConfig, Config: desired}, s.cfg.Kernel)
++			if err != nil {
++				t.Fatalf("managed intent was discarded before lifecycle could reject it: %v", err)
++			}
++			s.handleWSEvent(context.Background(), event)
++			status := s.Status()
++			if k.running || status.Ready || status.State != "error" || !strings.Contains(status.Error, wantError) {
++				t.Fatalf("invalid managed exit left direct running: %+v", status)
++			}
++			// A corrected explicit direct selection can recover without service restart.
++			desired.DefaultOutbound = "direct"
++			desired.CustomOutbounds = nil
++			event, err = controlplane.TranslateWSEvent(panel.WSEvent{Type: panel.WSEventSyncConfig, Config: desired}, s.cfg.Kernel)
++			if err != nil {
++				t.Fatal(err)
++			}
++			s.handleWSEvent(context.Background(), event)
++			if !s.Status().Ready || !k.running {
++				t.Fatal("corrected configuration did not recover")
++			}
++		})
++	}
++}
+diff --git a/internal/service/service.go b/internal/service/service.go
+index de1774c..535598b 100644
+--- a/internal/service/service.go
++++ b/internal/service/service.go
+@@ -5,6 +5,7 @@ import (
+ 	"crypto/sha256"
+ 	"encoding/binary"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"math"
+@@ -919,7 +920,11 @@ func (s *Service) reconcileKernel(ctx context.Context) {
+ 		_, _, err = s.kernel.UpdateUsers(s.lastUsers)
+ 	}
+ 	if err != nil {
+-		nlog.Core().Warn("kernel update failed, restarting", "error", err)
++		if errors.Is(err, kernel.ErrRestartRequired) {
++			nlog.Core().Info("outbound configuration changed, restarting node core")
++		} else {
++			nlog.Core().Warn("kernel update failed, restarting", "error", err)
++		}
+ 		s.startKernel(s.lastConfig, s.lastUsers)
+ 		return
+ 	}
+@@ -1236,6 +1241,13 @@ func validateNodeRuntime(cfg *config.Config, kcfgSupported []string, spec *model
+ 	if spec == nil {
+ 		return fmt.Errorf("node spec is nil")
+ 	}
++	// Managed selections are deliberately delivered even when invalid so the
++	// lifecycle can stop the old direct core and report a recoverable error.
++	if spec.DefaultOutbound != "" {
++		if err := model.ValidateNodeSpec(spec, cfg.Kernel); err != nil {
++			return err
++		}
++	}
+ 	if !containsString(kcfgSupported, spec.Protocol) {
+ 		return fmt.Errorf("protocol %q is not supported by kernel %q", spec.Protocol, cfg.Kernel.Type)
+ 	}

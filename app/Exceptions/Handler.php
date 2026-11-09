@@ -29,6 +29,10 @@ class Handler extends ExceptionHandler
     protected $dontFlash = [
         'password',
         'password_confirmation',
+        'settings',
+        'uri',
+        'uuid',
+        'custom_outbounds',
     ];
 
     /**

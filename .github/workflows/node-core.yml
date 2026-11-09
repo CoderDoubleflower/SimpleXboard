@@ -1,4 +1,4 @@
-name: Verify node core lifecycle
+name: Verify node lifecycle and outbounds
 
 on:
   pull_request:
@@ -62,26 +62,35 @@ jobs:
           test "$(git rev-parse HEAD)" = 0a29338e1f102a462363ce3527417029f89bab28
           git apply --check ../patches/xboard-node/v1.13-core-lifecycle.patch
           git apply ../patches/xboard-node/v1.13-core-lifecycle.patch
+          git apply --check ../patches/xboard-node/v1.13-managed-outbounds.patch
+          git apply ../patches/xboard-node/v1.13-managed-outbounds.patch
       - name: Run node regression tests
         working-directory: .node-source
         run: go test -p 2 -tags "$NODE_BUILD_TAGS" ./...
       - name: Check concurrent lifecycle and status access
         working-directory: .node-source
-        run: go test -p 2 -race -tags "$NODE_BUILD_TAGS" ./internal/service ./internal/controlplane ./internal/machine ./cmd/xboard-node
+        run: go test -p 2 -race -tags "$NODE_BUILD_TAGS" ./internal/service ./internal/controlplane ./internal/machine ./internal/panel ./internal/kernel/singbox ./cmd/xboard-node
       - name: Build the fixed node
         working-directory: .node-source
         run: |
-          CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags "-s -w -X main.version=v1.13-simplexboard.1 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/xboard-node" ./cmd/xboard-node
+          CGO_ENABLED=0 go build -buildvcs=false -trimpath -tags "$NODE_BUILD_TAGS" -ldflags "-s -w -X main.version=v1.13-simplexboard.2 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/xboard-node" ./cmd/xboard-node
+          CGO_ENABLED=0 go build -trimpath -tags "$NODE_BUILD_TAGS" -o "$RUNNER_TEMP/singbox-fixture" ../tests/Support/singbox-fixture.go
       - name: Verify machine lifecycle through real REALITY and mihomo traffic
         timeout-minutes: 8
         run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-fixed -- python tests/Integration/node_core_lifecycle.py --xboard-node "$RUNNER_TEMP/xboard-node" --mihomo "$RUNNER_TEMP/mihomo"
+      - name: Verify six outbound protocols, switching and UDP through a real machine
+        timeout-minutes: 8
+        run: |
+          sudo ip address add 198.51.100.10/32 dev lo
+          trap 'sudo ip address del 198.51.100.10/32 dev lo' EXIT
+          python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/node-core-outbound -- python tests/Integration/outbound_connections.py --xboard-node "$RUNNER_TEMP/xboard-node" --kernel-fixture "$RUNNER_TEMP/singbox-fixture" --mihomo "$RUNNER_TEMP/mihomo"
       - name: Checksum the verified binary
         working-directory: ${{ runner.temp }}
         run: sha256sum xboard-node > xboard-node.sha256
       - name: Save the verified Linux amd64 binary
         uses: actions/upload-artifact@v4
         with:
-          name: xboard-node-v1.13-simplexboard.1-linux-amd64
+          name: xboard-node-v1.13-simplexboard.2-linux-amd64
           path: |
             ${{ runner.temp }}/xboard-node
             ${{ runner.temp }}/xboard-node.sha256

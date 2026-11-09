@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Cache;
 use App\Utils\CacheKey;
 use App\Services\NodeHealthService;
+use App\Services\OutboundCapabilityService;
 use App\Utils\Helper;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -132,6 +133,7 @@ class Server extends Model
         'd' => 'integer',
         'rate' => 'decimal:2',
         'machine_id' => 'integer',
+        'outbound_id' => 'integer',
     ];
 
     private const MULTIPLEX_CONFIGURATION = [
@@ -498,6 +500,16 @@ class Server extends Model
     public function routes()
     {
         return ServerRoute::whereIn('id', $this->route_ids)->get();
+    }
+
+    public function outbound(): BelongsTo
+    {
+        return $this->belongsTo(ServerOutbound::class, 'outbound_id');
+    }
+
+    protected function managedOutboundSupported(): Attribute
+    {
+        return Attribute::make(get: fn () => OutboundCapabilityService::supportsNode($this));
     }
 
     /**

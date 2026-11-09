@@ -4,7 +4,9 @@
 namespace App\Http\Requests\Admin;
 
 use App\Models\Server;
+use App\Services\ServerOutboundService;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\ValidationException;
 
 class ServerSave extends FormRequest
 {
@@ -121,6 +123,7 @@ class ServerSave extends FormRequest
             'route_ids' => 'nullable|array',
             'parent_id' => 'nullable|integer',
             'machine_id' => 'nullable|integer|exists:v2_server_machine,id',
+            'outbound_id' => 'nullable|integer|exists:v2_server_outbound,id',
             'enabled' => 'sometimes|boolean',
             'host' => 'required',
             'port' => 'required',
@@ -240,6 +243,7 @@ class ServerSave extends FormRequest
     {
         return [
             'rate' => '固定流量倍率',
+            'outbound_id' => '流量出站',
             'protocol_settings.cipher' => '加密方式',
             'protocol_settings.obfs' => '混淆类型',
             'protocol_settings.network' => '传输协议',
@@ -270,6 +274,21 @@ class ServerSave extends FormRequest
             'protocol_settings.tls.ech.query_server_name' => 'ECH查询域名',
             'protocol_settings.tls.ech.key' => 'ECH密钥',
         ];
+    }
+
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator) {
+            if ($validator->errors()->isNotEmpty()) return;
+            $current = $this->input('id') ? Server::find($this->input('id')) : null;
+            try {
+                app(ServerOutboundService::class)->assertSelection($this->all(), $current);
+            } catch (ValidationException $e) {
+                foreach ($e->errors() as $key => $messages) {
+                    foreach ($messages as $message) $validator->errors()->add($key, $message);
+                }
+            }
+        });
     }
 
     public function messages()

@@ -1,3 +1,5 @@
+import { hasCustomRouting } from './outbounds.js';
+
 const GIB = 1073741824;
 export const PATH_PATTERN = '[A-Za-z0-9_\\-]+';
 
@@ -88,11 +90,16 @@ export function nodePayload(values, current = null) {
     if (Object.hasOwn(advanced, key)) retained[key] = advanced[key];
     else if (current && Object.hasOwn(current, key)) retained[key] = current[key];
   }
+  const outboundId = optionalNumber(Object.hasOwn(values, 'outbound_id') ? values.outbound_id : current?.outbound_id, '出站节点', { min: 1 });
+  if (outboundId !== null && hasCustomRouting(retained)) {
+    throw new Error('所选出站与高级路由配置冲突。请先将 route_ids、custom_routes 和 custom_outbounds 清空为 []，或取消选择出站以保留高级配置。');
+  }
   return {
     ...retained, ...(current?.id ? { id: current.id } : {}), type,
     name: String(values.name ?? '').trim(), host: String(values.host ?? '').trim(),
     port: String(values.port ?? '').trim(), server_port: optionalNumber(values.server_port, '监听端口', { min: 1 }),
     machine_id: optionalNumber(values.machine_id, 'VPS'),
+    outbound_id: outboundId,
     enabled: Boolean(values.enabled), show: Boolean(values.show),
     tags: String(values.tags ?? '').split(',').map(tag => tag.trim()).filter(Boolean),
     transfer_enable: quotaBytes(values.quota),

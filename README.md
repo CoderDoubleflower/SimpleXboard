@@ -11,7 +11,7 @@
 | 菜单 | 功能 |
 | --- | --- |
 | 概览 | 节点状态、成员数量、实际上传与下载、运行状态 |
-| VPS 与节点 | 机器凭据、节点连接参数、流量倍率、启停及订阅可见性 |
+| VPS 与节点 | 机器凭据、节点连接参数、出站管理与选择、流量倍率、启停及订阅可见性 |
 | 成员与订阅 | 创建与编辑成员、独立订阅、停用、删除、凭据轮换与导出 |
 | 日志与备份 | 管理审计、失败任务、数据库备份与离线恢复说明 |
 | 设置 | 管理员密码与会话、订阅域名、节点同步和订阅模板 |
@@ -21,6 +21,14 @@
 VLESS + REALITY、Hysteria2、现有其他协议及必要客户端格式保留。Redis、Horizon、Octane、WebSocket、机器与节点鉴权继续使用现有架构。
 
 创建或编辑 VLESS + REALITY 节点时，点击「一键生成密钥和 Short ID」即可填入配对公钥、私钥及 Short ID；也可单独点击「生成 Short ID」，保留现有密钥对。生成由已登录的管理后台完成，不依赖浏览器的 X25519 / WebCrypto 支持。手动导入仍然可用，生成结果在保存节点后才生效。
+
+## 出站管理与链式代理
+
+在「VPS 与节点 → 出站」保存现成的外部节点，支持 VLESS（TCP + REALITY / TLS）、Hysteria2、SOCKS5、Shadowsocks、Trojan（TCP + TLS）及 VMess（TCP）。可手动填写，也可粘贴单条节点分享链接，识别后检查参数再保存。
+
+创建或编辑入口节点时选择「流量出站」。默认直连；选择外部出站 B 后，默认路径为「客户端 → 入口 A → 外部 B → 目标」。同一 VPS 的不同节点可以选择不同出口，多个入口也可以复用同一出站。外部 B 无需安装 xboard-node，出口凭据不会写入成员订阅。
+
+此功能需要使用 sing-box 核心及 `v1.13-simplexboard.2`（或兼容）节点端。面板检查节点能力；旧版需要先升级并接入，再选择出站。切换出口、修改共享出口地址或认证会重建受影响节点的核心，已有连接可能短暂中断；出口故障不会自动回退为直连。详见[出站使用、升级与验收说明](docs/outbound-management.md)。
 
 ## 成员和额度
 
@@ -107,12 +115,14 @@ python tests/Support/run-stack.py -- python tests/Integration/node_lifecycle.py
 python tests/Support/run-stack.py --without-scheduler -- python panel/tests/e2e.py
 python tests/Support/run-stack.py --without-scheduler -- python panel/tests/reality_generation.py
 python tests/Support/run-stack.py --without-scheduler -- python panel/tests/visual_review.py
+python tests/Support/run-stack.py --without-scheduler -- python panel/tests/outbound_management.py
 ```
 
 集成测试要求本机 PHP Redis 扩展、Redis 服务端程序及 Python；测试脚本创建独立 SQLite、Redis 和随机端口，启动真实 Horizon/Workerman，结束后清理，不使用已有业务库。可通过 `--php`、`--redis` 指定程序路径，通过 `--artifacts` 指定测试记录目录。
 
 ## 升级、回退与验证记录
 
+- [出站管理、节点升级与验收](docs/outbound-management.md)
 - [每节点流量倍率补丁与自测](docs/node-traffic-multipliers.md)
 - [第二轮交接与自测记录](docs/round-2-handoff.md)
 - [第二轮数据迁移、备份与回退](docs/round-2-migration.md)
