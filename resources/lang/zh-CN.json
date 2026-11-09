@@ -112,6 +112,7 @@
     "Subscription Link": "订阅链接",
     "Copy": "复制",
     "Copied": "已复制",
+    "Automatic copy failed. The link is selected; copy it manually.": "自动复制失败，已选中订阅链接，请手动复制。",
     "QR Code": "二维码",
     "Unlimited": "长期有效",
     "Device Limit": "设备限制",

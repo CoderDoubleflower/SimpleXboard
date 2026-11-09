@@ -112,6 +112,7 @@
     "Subscription Link": "Subscription Link",
     "Copy": "Copy",
     "Copied": "Copied",
+    "Automatic copy failed. The link is selected; copy it manually.": "Automatic copy failed. The link is selected; copy it manually.",
     "QR Code": "QR Code",
     "Unlimited": "Unlimited",
     "Device Limit": "Device Limit",

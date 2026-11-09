@@ -376,7 +376,7 @@ select.input { appearance: auto; padding-right: 20px; }
 .toast-region { position: fixed; z-index: 100; top: 20px; right: 24px; display: flex; align-items: flex-end; flex-direction: column; gap: 10px; max-width: min(460px,calc(100vw - 32px)); pointer-events: none; }
 .toast { display: flex; align-items: center; gap: 11px; border: 1px solid #cce3d4; border-radius: 12px; padding: 16px 20px; background: var(--surface); box-shadow: 0 8px 30px #18352818; font-size: 13px; color: var(--primary-dark); overflow-wrap: anywhere; }
 .toast-error { border-color: #edc4c2; color: var(--danger); }
-.clipboard-fallback { position: fixed; left: -10000px; }
+.clipboard-fallback { position: fixed; top: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; font-size: 16px; pointer-events: none; }
 
 /* Settings and secondary pages */
 .settings-form { display: flex; flex-direction: column; gap: 24px; }

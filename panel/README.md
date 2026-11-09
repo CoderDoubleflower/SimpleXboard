@@ -93,3 +93,11 @@ python3 tests/Support/run-stack.py --without-scheduler -- python3 panel/tests/no
 `reality_generation.py` 覆盖普通 HTTP、无 WebCrypto 的生成、取消和保存流程。`visual_review.py` 检查桌面、平板、小手机与横屏布局、长名称、键盘导航、表单可达性，并保存遮蔽凭据的截图。
 
 `node_status.py` 使用实际认证接口与 WebSocket 验证三类状态独立展示、异常文字安全、手机布局、期望/应用用户数量不一致及概览计数。实际节点与代理请求由 `tests/Integration/node_core_lifecycle.py` 验证。
+
+复制功能另有不依赖后端的浏览器回归测试：
+
+```sh
+python3 panel/tests/clipboard.py
+```
+
+该测试在浏览器内使用本地源码和隔离数据，检查安全上下文、普通 HTTP、Clipboard API 拒绝后的备用复制、原生弹窗内复制、实际粘贴内容，以及全部自动方式失败后的手动复制入口。也可通过 `E2E_CHROMIUM_PATH` 指定 Chromium。
