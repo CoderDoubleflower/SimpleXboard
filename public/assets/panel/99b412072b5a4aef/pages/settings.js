@@ -1,6 +1,7 @@
 import { h, icon, button, input, select, field, textarea, checkbox, secretInput, formValues, pageHeader, panel, loading, errorState, notice, table, badge, toast, runAction, confirmAction, tabs, emptyState } from '../ui.js';
 import { data, datetime, errorMessage } from '../format.js';
 import { PATH_PATTERN } from '../domain.js';
+import { createSubscriptionTemplateEditor } from './subscription-templates.js';
 
 export async function settingsPage(host, context) {
   const { api, signal, refresh } = context;
@@ -13,12 +14,14 @@ export async function settingsPage(host, context) {
   const tabHost = h('div');
   const general = generalSettings(config, context);
   const security = securitySettings(config, context);
-  const templates = templateSettings(config, context);
+  const templateEditor = createSubscriptionTemplateEditor(context);
+  const templates = templateEditor.element;
   const sections = { general, security, templates };
   let active = ['general', 'security', 'templates'].includes(context.query.get('tab')) ? context.query.get('tab') : 'general';
   function show() {
     tabHost.replaceChildren(tabs([{ value: 'general', label: '基础设置' }, { value: 'security', label: '管理员安全' }, { value: 'templates', label: '订阅模板' }], active, value => { active = value; show(); }));
     for (const [id, section] of Object.entries(sections)) section.hidden = active !== id;
+    if (active === 'templates') templateEditor.activate();
   }
   content.replaceChildren(tabHost, general, security, templates);
   show();
@@ -119,34 +122,4 @@ function securitySettings(config, context) {
   return h('div', { class: 'stack-lg' },
     panel(null, h('div', { class: 'admin-profile' }, h('span', { class: 'member-avatar' }, String(profile.name || profile.email || 'A').slice(0, 1).toUpperCase()), h('div', {}, h('h3', {}, profile.email), h('p', { class: 'muted' }, `管理员 · 最近登录 ${datetime(profile.last_login_at)}`)), badge('唯一管理入口', 'success'))),
     h('div', { class: 'security-grid' }, panel('更改管理员密码', passwordForm), panel('登录会话', h('div', {}, sessionList, h('div', { class: 'panel-footer' }, revoke)))), access);
-}
-
-function templateSettings(config, context) {
-  const formats = [{ value: 'singbox', label: 'sing-box' }, { value: 'clashmeta', label: 'Clash Meta / Mihomo' }, { value: 'clash', label: 'Clash' }, { value: 'stash', label: 'Stash' }, { value: 'surge', label: 'Surge' }, { value: 'surfboard', label: 'Surfboard' }];
-  const originals = { ...(config.subscribe_template ?? {}) };
-  const drafts = { ...originals };
-  let selected = 'singbox';
-  const selector = select('template-format', formats, selected);
-  const editor = textarea('template-content', originals.subscribe_template_singbox ?? '', { rows: 22, spellcheck: false, class: 'input mono template-editor', 'aria-label': '订阅模板内容' });
-  const errors = h('div');
-  selector.addEventListener('change', () => {
-    drafts[`subscribe_template_${selected}`] = editor.value;
-    selected = selector.value;
-    editor.value = drafts[`subscribe_template_${selected}`] ?? '';
-    errors.replaceChildren();
-  });
-  const save = button('保存当前模板', { tone: 'primary', icon: 'check', onClick: event => runAction(event.currentTarget, async () => {
-    errors.replaceChildren();
-    const key = `subscribe_template_${selected}`;
-    try {
-      await context.api.post('config/save', { [key]: editor.value });
-      originals[key] = editor.value;
-      drafts[key] = editor.value;
-      toast('订阅模板已保存');
-    } catch (error) { errors.replaceChildren(notice(errorMessage(error), 'error')); }
-  }) });
-  return panel('客户端订阅模板', h('div', { class: 'panel-body stack-lg' },
-    notice('模板决定客户端收到的完整配置。通常可以保留现有内容，需要时再修改对应格式。'),
-    h('div', { class: 'template-toolbar' }, field('客户端格式', selector), button('放弃当前修改', { onClick: () => { editor.value = originals[`subscribe_template_${selected}`] ?? ''; errors.replaceChildren(); } })),
-    editor, errors, h('div', { class: 'settings-form-footer' }, h('p', { class: 'field-hint' }, '只保存当前选择的模板格式。'), save)));
 }

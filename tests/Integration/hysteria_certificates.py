@@ -133,11 +133,11 @@ def main():
             def log_message(self, *_):
                 pass
 
-        origin = ThreadingHTTPServer(("127.0.0.1", 0), OriginHandler)
+        origin = ThreadingHTTPServer(("127.0.0.2", 0), OriginHandler)
         threading.Thread(target=origin.serve_forever, daemon=True).start()
-        route = {"ip_cidr": ["127.0.0.1/32"], "port": [origin.server_port], "network": ["tcp"], "outbound": "direct"}
+        route = {"ip_cidr": ["127.0.0.2/32"], "port": [origin.server_port], "network": ["tcp"], "outbound": "direct"}
         if args.kernel == "xray":
-            route = {"type": "field", "ip": ["127.0.0.1/32"], "port": str(origin.server_port), "network": "tcp", "outboundTag": "direct"}
+            route = {"type": "field", "ip": ["127.0.0.2/32"], "port": str(origin.server_port), "network": "tcp", "outboundTag": "direct"}
         config = {"kernel": {"type": args.kernel, "log_level": "error", "config_dir": str(work / "kernel"), "custom_route": [route]},
                   "log": {"level": "info"}, "health_port": health_port,
                   "cert": {"cert_dir": str(work / "cert-cache")},
@@ -178,7 +178,7 @@ def main():
             client, socks_port = client_pair
             require(client.poll() is None, "Mihomo exited")
             sent = subprocess.run(["curl", "--silent", "--fail", "--noproxy", "", "--socks5-hostname", f"127.0.0.1:{socks_port}",
-                                   "--connect-timeout", "2", "--max-time", "4", f"http://127.0.0.1:{origin.server_port}/proof"],
+                                   "--connect-timeout", "2", "--max-time", "4", f"http://127.0.0.2:{origin.server_port}/proof"],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=6)
             return sent.returncode == 0 and sent.stdout == expected
 

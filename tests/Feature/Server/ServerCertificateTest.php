@@ -302,7 +302,8 @@ class ServerCertificateTest extends TestCase
         $this->assertCount(1, $subscriptionNodes);
         $this->assertArrayNotHasKey('cert_config', $subscriptionNodes[0]);
         $this->assertStringNotContainsString('must-not-reach-clients', json_encode($subscriptionNodes));
-        $this->get('/s/' . $user->token . '?flag=sing-box')->assertOk()->assertDontSee('must-not-reach-clients', false);
+        $this->get('/s/' . $user->token . '?flag=mihomo')->assertOk()->assertDontSee('must-not-reach-clients', false);
+        $this->get('/s/' . $user->token . '?flag=stash')->assertOk()->assertDontSee('must-not-reach-clients', false);
     }
 
     public function test_certificate_credentials_are_redacted_from_the_administrator_audit_log(): void

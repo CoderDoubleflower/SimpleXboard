@@ -123,7 +123,10 @@ test('existing other protocols and custom outbound data round-trip through JSON'
 });
 
 test('subscription format updates preserve token queries without unsafe schemes', () => {
-  assert.equal(subscriptionUrl('https://sub.example/s/token?x=1', 'singbox'), 'https://sub.example/s/token?x=1&flag=singbox');
-  assert.equal(subscriptionUrl('https://sub.example/s/token?flag=clash', 'surge'), 'https://sub.example/s/token?flag=surge');
+  assert.equal(subscriptionUrl('https://sub.example/s/token?x=1', 'mihomo'), 'https://sub.example/s/token?x=1&flag=mihomo');
+  assert.equal(subscriptionUrl('https://sub.example/s/token?flag=clash', 'stash'), 'https://sub.example/s/token?flag=stash');
+  assert.equal(subscriptionUrl('https://sub.example/s/token'), 'https://sub.example/s/token?flag=mihomo');
+  assert.throws(() => subscriptionUrl('https://sub.example/s/token', 'singbox'), /仅支持/);
+  assert.throws(() => subscriptionUrl('https://sub.example/s/token', 'surge'), /仅支持/);
   assert.throws(() => subscriptionUrl('javascript:alert(1)'), /格式无效/);
 });

@@ -33,6 +33,11 @@ class Handler extends ExceptionHandler
         'uri',
         'uuid',
         'custom_outbounds',
+        'profile',
+        'content',
+        'subscribe_template_mihomo',
+        'subscribe_template_clashmeta',
+        'subscribe_template_stash',
     ];
 
     /**

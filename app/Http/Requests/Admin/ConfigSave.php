@@ -23,12 +23,9 @@ class ConfigSave extends FormRequest
         'password_limit_enable' => 'boolean',
         'password_limit_count' => 'integer|min:1|max:20',
         'password_limit_expire' => 'integer|min:1|max:1440',
-        'subscribe_template_singbox' => 'nullable|string|max:262144',
-        'subscribe_template_clash' => 'nullable|string|max:262144',
+        'subscribe_template_mihomo' => 'sometimes|required|string|max:262144',
         'subscribe_template_clashmeta' => 'nullable|string|max:262144',
         'subscribe_template_stash' => 'nullable|string|max:262144',
-        'subscribe_template_surge' => 'nullable|string|max:262144',
-        'subscribe_template_surfboard' => 'nullable|string|max:262144',
     ];
 
     public function rules(): array

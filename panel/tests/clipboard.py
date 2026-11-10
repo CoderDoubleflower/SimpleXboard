@@ -18,7 +18,7 @@ from playwright.sync_api import expect, sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEXT = '中文订阅与命令 ✓\n  https://panel.example.test/sub?token=a%2Bb&flag=sing-box\n第二行\n'
+TEXT = '中文订阅与命令 ✓\n  https://panel.example.test/sub?token=a%2Bb&flag=stash\n第二行\n'
 SUBSCRIPTION = 'https://panel.example.test/sub?token=clipboard-fixture'
 TOKEN = 'clipboard-fixture-machine-token'
 COMMAND = "printf '%s\\n' 'clipboard fixture'\n# 这里只是复制内容，不执行命令\n"
@@ -258,11 +258,11 @@ def main():
                 page = open_page()
                 page.evaluate("renderPage('members')")
                 page.get_by_role('button', name='复制 复制测试成员 的订阅', exact=True).click()
-                check_success(page, SUBSCRIPTION)
+                check_success(page, SUBSCRIPTION + '&flag=mihomo')
                 page.get_by_role('button', name='查看 复制测试成员 的订阅', exact=True).click()
-                page.get_by_label('客户端格式', exact=True).select_option('sing-box')
+                page.get_by_label('客户端格式', exact=True).select_option('stash')
                 page.get_by_role('button', name='复制订阅链接', exact=True).click()
-                check_success(page, SUBSCRIPTION + '&flag=sing-box', True)
+                check_success(page, SUBSCRIPTION + '&flag=stash', True)
                 page.get_by_role('button', name='复制节点 UUID', exact=True).click()
                 check_success(page, 'be06e0fb-10cd-49d2-a864-8a723c66a526', True)
                 page.locator('dialog[open] .dialog-footer').get_by_role('button', name='关闭', exact=True).click()

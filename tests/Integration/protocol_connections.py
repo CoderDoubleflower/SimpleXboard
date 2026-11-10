@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Proxy actual loopback HTTP requests through panel-generated subscriptions.
 
-Run with tests/Support/run-stack.py and an official sing-box binary:
-  python tests/Support/run-stack.py -- python tests/Integration/protocol_connections.py --sing-box /path/to/sing-box
+Run with tests/Support/run-stack.py and official sing-box / mihomo binaries:
+  python tests/Support/run-stack.py -- python tests/Integration/protocol_connections.py --sing-box /path/to/sing-box --mihomo /path/to/mihomo
 
-Requires sing-box with QUIC/uTLS support, curl and OpenSSL. Both protocol servers,
+Requires sing-box with QUIC/uTLS support, mihomo, curl and OpenSSL. Both protocol servers,
 the TLS handshake target and the HTTP origin listen only on loopback. This tests
 VLESS + REALITY and Hysteria2 data traffic, not deployment to a VPS or a production
-node agent. Subscription responses are executed without modifying their JSON.
+node agent. Subscription responses are executed without modifying their YAML.
 REALITY keys and Short IDs come from the authenticated panel generator APIs.
 """
 from __future__ import annotations
@@ -39,6 +39,17 @@ class CheckFailed(Exception):
 def require(condition, message):
     if not condition:
         raise CheckFailed(message)
+
+
+def parse_yaml(raw):
+    # Reuse the application's locked YAML parser instead of adding a test-only
+    # dependency or making assertions against a second hand-written config.
+    php = os.environ.get("E2E_PHP_BIN", "php")
+    code = "require 'vendor/autoload.php'; echo json_encode(\\Symfony\\Component\\Yaml\\Yaml::parse(stream_get_contents(STDIN)), JSON_THROW_ON_ERROR);"
+    parsed = subprocess.run([php, "-r", code], input=raw, capture_output=True,
+                            cwd=Path(__file__).resolve().parents[2], timeout=10)
+    require(parsed.returncode == 0, "Subscription YAML could not be parsed")
+    return json.loads(parsed.stdout)
 
 
 class API:
@@ -151,6 +162,7 @@ def wait_tcp(port, child):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sing-box", default=os.environ.get("SING_BOX_BIN", "sing-box"))
+    parser.add_argument("--mihomo", default=os.environ.get("MIHOMO_BIN", "mihomo"))
     args = parser.parse_args()
     require(os.environ.get("SIMPLEXBOARD_E2E") == "1", "Run this test through tests/Support/run-stack.py")
     base = os.environ["E2E_BASE_URL"]
@@ -160,6 +172,8 @@ def main():
     artifacts = Path(os.environ["E2E_ARTIFACT_DIR"])
     binary = shutil.which(args.sing_box)
     require(binary is not None, "sing-box binary not found")
+    mihomo = shutil.which(args.mihomo)
+    require(mihomo is not None, "mihomo binary not found")
     for tool in ("curl", "openssl"):
         require(shutil.which(tool) is not None, tool + " is required")
     version_output = subprocess.check_output([binary, "version"], text=True)
@@ -168,6 +182,9 @@ def main():
     version = version_match.group(1)
     result = {"scope": "loopback-only", "sing_box_version": version,
               "binary_sha256": hashlib.sha256(Path(binary).read_bytes()).hexdigest(), "protocols": []}
+    mihomo_version = subprocess.check_output([mihomo, "-v"], text=True).strip().splitlines()[0]
+    result["mihomo_version"] = mihomo_version
+    result["mihomo_sha256"] = hashlib.sha256(Path(mihomo).read_bytes()).hexdigest()
     api = API(base, os.environ["E2E_ADMIN_PATH"])
     login = api.request("POST", "/api/v1/passport/auth/login", authenticated=False,
                         data={"email": os.environ["E2E_ADMIN_EMAIL"], "password": os.environ["E2E_ADMIN_PASSWORD"]})
@@ -231,9 +248,9 @@ def main():
             def log_message(self, *_):
                 pass
 
-        origin = ThreadingHTTPServer(("127.0.0.1", 0), OriginHandler)
+        origin = ThreadingHTTPServer(("127.0.0.2", 0), OriginHandler)
         threading.Thread(target=origin.serve_forever, daemon=True).start()
-        target = f"http://127.0.0.1:{origin.server_port}/protocol-proof"
+        target = f"http://127.0.0.2:{origin.server_port}/protocol-proof"
         for node in nodes:
             label = "vless-reality" if node["type"] == "vless" else "hysteria2"
             query = {"token": fixture["server_token"], "node_id": node["id"]}
@@ -270,30 +287,33 @@ def main():
                 wait_tcp(backend["server_port"], server)
 
             client_port = free_port()
-            template = {"log": {"level": "warn"}, "inbounds": [{"type": "socks", "tag": "local-socks", "listen": "127.0.0.1", "listen_port": client_port}],
-                        "outbounds": [], "route": {"rules": [], "final": node["name"]}}
-            api.admin("config/save", {"subscribe_template_singbox": json.dumps(template), "show_protocol_to_server_enable": False})
-            raw = api.raw("GET", "/s/" + member["token"], query={"flag": "sing-box"}, authenticated=False, user_agent="sing-box " + version)
-            subscription = json.loads(raw)
-            outbound = next((item for item in subscription["outbounds"] if item["tag"] == node["name"]), None)
+            template = {"socks-port": client_port, "allow-lan": False, "bind-address": "127.0.0.1", "mode": "rule", "log-level": "warning",
+                        "proxies": [], "proxy-groups": [], "rules": ["MATCH," + node["name"]],
+                        "dns": {"enable": False}, "profile": {"store-selected": False}}
+            api.admin("config/save", {"subscribe_template_clashmeta": json.dumps(template), "show_protocol_to_server_enable": False})
+            raw = api.raw("GET", "/s/" + member["token"], query={"flag": "mihomo"}, authenticated=False, user_agent="Mihomo/1.19.29")
+            subscription = parse_yaml(raw)
+            outbound = next((item for item in subscription["proxies"] if item["name"] == node["name"]), None)
             require(outbound is not None, label + " subscription omitted the node")
-            require(subscription["route"]["final"] == node["name"], "Subscription changed the selected route")
-            require(outbound["tls"]["insecure"] is False, label + " subscription disabled certificate verification")
-            require(outbound["tls"]["server_name"] == "localhost", label + " subscription changed the TLS name")
+            require(subscription["rules"][-1] == "MATCH," + node["name"], "Subscription changed the selected route")
+            require(outbound.get("skip-cert-verify", False) is False, label + " subscription disabled certificate verification")
+            require(outbound.get("servername", outbound.get("sni")) == "localhost", label + " subscription changed the TLS name")
             require(pair["private_key"].encode() not in raw, "Subscription exposed the REALITY private key")
             require(outbound.get("uuid", outbound.get("password")) == backend_user["uuid"], "Subscription credentials differ from node API")
             if label == "vless-reality":
-                require(outbound["flow"] == "xtls-rprx-vision" and outbound["tls"]["reality"]["public_key"] == pair["public_key"]
-                        and outbound["tls"]["reality"]["short_id"] == short_id, "Subscription changed REALITY settings")
+                require(outbound["flow"] == "xtls-rprx-vision" and outbound["reality-opts"]["public-key"] == pair["public_key"]
+                        and outbound["reality-opts"]["short-id"] == short_id, "Subscription changed REALITY settings")
             else:
-                require(outbound["type"] == "hysteria2" and outbound["obfs"] == {"type": "salamander", "password": hy2_password},
+                require(outbound["type"] == "hysteria2" and outbound["obfs"] == "salamander" and outbound["obfs-password"] == hy2_password,
                         "Subscription changed Hysteria2 authentication or obfuscation")
-            client_config = work / (label + "-subscription.json")
+            client_config = work / (label + "-subscription.yaml")
             private_write(client_config, raw)
+            client_dir = work / (label + "-mihomo")
+            client_dir.mkdir()
             with (artifacts / (label + "-client-check.log")).open("wb") as log:
-                checked = subprocess.run([binary, "check", "-c", str(client_config)], env=env, stdout=log, stderr=subprocess.STDOUT)
+                checked = subprocess.run([mihomo, "-t", "-f", str(client_config), "-d", str(client_dir)], env=env, stdout=log, stderr=subprocess.STDOUT)
             require(checked.returncode == 0, label + " subscription was rejected; see check log")
-            client = processes.start(label + "-client", [binary, "run", "-c", str(client_config)])
+            client = processes.start(label + "-client", [mihomo, "-f", str(client_config), "-d", str(client_dir)])
             wait_tcp(client_port, client)
             curl = ["curl", "--silent", "--show-error", "--fail", "--noproxy", "", "--socks5-hostname", f"127.0.0.1:{client_port}",
                     "--connect-timeout", "5", "--max-time", "10", target]

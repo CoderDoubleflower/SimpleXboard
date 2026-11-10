@@ -3,11 +3,14 @@
 namespace App\Http\Controllers\V1\Client;
 
 use App\Http\Controllers\Controller;
+use App\Exceptions\ApiException;
 use App\Models\Server;
-use App\Protocols\General;
+use App\Protocols\ClashMeta;
+use App\Protocols\Stash;
 use App\Services\ServerService;
 use App\Services\UserService;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class ClientController extends Controller
 {
@@ -34,7 +37,7 @@ class ClientController extends Controller
         $request->validate([
             'types' => ['nullable', 'string'],
             'filter' => ['nullable', 'string'],
-            'flag' => ['nullable', 'string'],
+            'flag' => ['nullable', 'string', 'max:64'],
         ]);
 
         $user = $request->user();
@@ -44,7 +47,14 @@ class ClientController extends Controller
             return response('', 403, ['Content-Type' => 'text/plain']);
         }
 
-        return $this->doSubscribe($request, $user);
+        try {
+            return $this->doSubscribe($request, $user);
+        } catch (ValidationException $exception) {
+            // A public client cannot repair administrator-authored references.
+            // Fail closed without redirecting or revealing hidden node details;
+            // admin preview calls doSubscribe directly to retain field errors.
+            throw new ApiException('订阅模板配置不可用，请联系管理员检查链式代理和规则引用。', 422);
+        }
     }
 
     public function doSubscribe(Request $request, $user, $servers = null)
@@ -58,8 +68,7 @@ class ClientController extends Controller
         $requestedTypes = $this->parseRequestedTypes($request->input('types'));
         $filterKeywords = $this->parseFilterKeywords($request->input('filter'));
 
-        $protocolClassName = app('protocols.manager')->matchProtocolClassName($clientInfo['flag'])
-            ?? General::class;
+        $protocolClassName = $clientInfo['format'] === 'stash' ? Stash::class : ClashMeta::class;
 
         $serversFiltered = $this->filterServers(
             servers: $servers,
@@ -75,7 +84,7 @@ class ClientController extends Controller
             'servers' => $serversFiltered,
             'clientName' => $clientInfo['name'] ?? null,
             'clientVersion' => $clientInfo['version'] ?? null,
-            'userAgent' => $clientInfo['flag'] ?? null
+            'userAgent' => $request->header('User-Agent', '')
         ]);
 
         return $protocolInstance->handle();
@@ -141,47 +150,42 @@ class ClientController extends Controller
 
     private function getClientInfo(Request $request): array
     {
-        $flag = strtolower($request->input('flag') ?? $request->header('User-Agent', ''));
+        $manager = app('protocols.manager');
+        $userAgent = strtolower($request->header('User-Agent', ''));
+        $flag = $request->input('flag');
+        $hasExplicitFlag = is_string($flag) && trim($flag) !== '';
 
-        $clientName = null;
+        if ($hasExplicitFlag) {
+            $format = $manager->normalizeFlag($flag);
+            if ($format === null) {
+                throw new ApiException('订阅仅支持 mihomo 与 Stash，请使用 flag=mihomo 或 flag=stash。', 422);
+            }
+        } else {
+            // Recognized retired clients receive an actionable error instead of
+            // accidentally importing a config belonging to a different engine.
+            if (preg_match('/(?:^|[^a-z0-9])(?:sing[- ]?box|sagernet|surge|surfboard|quantumultx?|shadowrocket|loon|v2rayng?|nekobox|nekoray|passwall|ssrplus|shadowsocks)(?:[^a-z0-9]|$)/i', $userAgent)) {
+                throw new ApiException('该客户端的订阅格式已停用，目前仅支持 mihomo 与 Stash。', 422);
+            }
+            $format = $manager->matchProtocolClassName($userAgent) === Stash::class ? 'stash' : 'mihomo';
+        }
+
+        // The query chooses the format; the real UA supplies its version. In
+        // particular flag=stash must not erase Stash/3.x feature compatibility.
+        $clientName = $format === 'stash' ? 'stash' : 'meta';
         $clientVersion = null;
-
-        if (preg_match('/([a-zA-Z0-9\-_]+)[\/\s]+(v?[0-9]+(?:\.[0-9]+){0,2})/', $flag, $matches)) {
-            $potentialName = strtolower($matches[1]);
-            $clientVersion = preg_replace('/^v/', '', $matches[2]);
-
-            if (in_array($potentialName, app('protocols.flags'))) {
-                $clientName = $potentialName;
-            }
-        }
-
-        if (!$clientName) {
-            $flags = collect(app('protocols.flags'))->sortByDesc(fn($f) => strlen($f))->values()->all();
-            foreach ($flags as $name) {
-                if (stripos($flag, $name) !== false) {
-                    $clientName = $name;
-                    if (!$clientVersion) {
-                        $pattern = '/' . preg_quote($name, '/') . '[\/\s]+(v?[0-9]+(?:\.[0-9]+){0,2})/i';
-                        if (preg_match($pattern, $flag, $vMatches)) {
-                            $clientVersion = preg_replace('/^v/', '', $vMatches[1]);
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        if (!$clientVersion) {
-            if (preg_match('/\/v?(\d+(?:\.\d+){0,2})/', $flag, $matches)) {
+        $patterns = $format === 'stash'
+            ? ['stash' => 'stash(?:[ _-](?:macos|mac|ios|tvos))?']
+            : ['meta' => 'mihomo|clash[ ._-]?meta|meta', 'clashmetaforandroid' => 'clashmetaforandroid',
+                'flclash' => 'flclash', 'verge' => '(?:clash[ ._-]?)?verge', 'ClashX Meta' => 'clashx[ ._-]?meta'];
+        foreach ($patterns as $name => $pattern) {
+            if (preg_match('~(?:^|[^a-z0-9])(?:' . $pattern . ')[/\s]+v?(\d+(?:\.\d+){0,2})(?:[^\d.]|$)~i', $userAgent, $matches)) {
+                $clientName = $name;
                 $clientVersion = $matches[1];
+                break;
             }
         }
 
-        return [
-            'flag' => $flag,
-            'name' => $clientName,
-            'version' => $clientVersion
-        ];
+        return ['format' => $format, 'name' => $clientName, 'version' => $clientVersion];
     }
 
 

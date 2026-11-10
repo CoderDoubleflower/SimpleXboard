@@ -4,6 +4,7 @@ namespace App\Http\Routes\V2;
 
 use App\Http\Controllers\V2\Admin\SecurityController;
 use App\Http\Controllers\V2\Admin\ConfigController;
+use App\Http\Controllers\V2\Admin\SubscriptionTemplateController;
 use App\Http\Controllers\V2\Admin\Server\RouteController;
 use App\Http\Controllers\V2\Admin\Server\OutboundController;
 use App\Http\Controllers\V2\Admin\Server\ManageController;
@@ -30,6 +31,10 @@ class AdminRoute
             $router->post('auth/revokeSessions', [SecurityController::class, 'revokeSessions']);
             $router->get('config/fetch', [ConfigController::class, 'fetch']);
             $router->post('config/save', [ConfigController::class, 'save']);
+            $router->get('subscription-template/fetch', [SubscriptionTemplateController::class, 'fetch']);
+            $router->post('subscription-template/save', [SubscriptionTemplateController::class, 'save']);
+            $router->post('subscription-template/preview', [SubscriptionTemplateController::class, 'preview']);
+            $router->post('subscription-template/import', [SubscriptionTemplateController::class, 'import']);
             $router->get('server/route/fetch', [RouteController::class, 'fetch']);
             $router->post('server/route/save', [RouteController::class, 'save']);
             $router->post('server/route/drop', [RouteController::class, 'drop']);

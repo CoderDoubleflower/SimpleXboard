@@ -1,6 +1,7 @@
 import { h, icon, button, iconButton, badge, input, select, field, textarea, checkbox, formValues, pageHeader, panel, loading, emptyState, errorState, notice, table, pagination, toast, copyText, runAction, openDialog, confirmAction, toggleSwitch } from '../ui.js';
 import { data, bytes, datetime, dateInput, memberStatus, protocolName, subscriptionUrl } from '../format.js';
 import { memberPayload, gibValue } from '../domain.js';
+import { SUBSCRIPTION_CLIENTS } from '../subscription-templates.js';
 
 export async function membersPage(host, context) {
   const { api, signal } = context;
@@ -48,7 +49,7 @@ export async function membersPage(host, context) {
         }) },
         { label: '操作', className: 'actions-cell', render: member => h('div', { class: 'row-actions' },
           iconButton(`查看 ${member.name || member.email} 的订阅`, 'link', () => memberSubscription(member, context, load)),
-          iconButton(`复制 ${member.name || member.email} 的订阅`, 'copy', () => copyText(member.subscribe_url, '订阅链接已复制')),
+          iconButton(`复制 ${member.name || member.email} 的订阅`, 'copy', () => copyText(subscriptionUrl(member.subscribe_url), 'mihomo 订阅链接已复制')),
           iconButton(`编辑 ${member.name || member.email}`, 'edit', () => edit(member)),
           iconButton(`删除 ${member.name || member.email}`, 'trash', () => confirmAction({
             title: '删除成员', description: `删除“${member.name || member.email}”后，其订阅与节点凭据将失效。此操作不能撤销。`, label: '删除成员',
@@ -107,10 +108,8 @@ function memberEditor(member, nodes, context, reload) {
 }
 
 function memberSubscription(member, context, reload) {
-  const format = select('client-format', [
-    { value: '', label: '通用订阅' }, { value: 'meta', label: 'Clash Meta / Mihomo' }, { value: 'sing-box', label: 'sing-box' }, { value: 'surge', label: 'Surge' },
-  ], '');
-  const address = textarea('subscription-address', member.subscribe_url ?? '', { readonly: true, rows: 3, class: 'input mono' });
+  const format = select('client-format', SUBSCRIPTION_CLIENTS, 'mihomo');
+  const address = textarea('subscription-address', member.subscribe_url ? subscriptionUrl(member.subscribe_url) : '', { readonly: true, rows: 3, class: 'input mono' });
   format.addEventListener('change', () => { try { address.value = subscriptionUrl(member.subscribe_url, format.value); } catch (error) { toast(error.message, 'error'); } });
   const state = memberStatus(member);
   const content = h('div', { class: 'stack-lg' },
