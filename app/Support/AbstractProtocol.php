@@ -140,6 +140,12 @@ abstract class AbstractProtocol
      */
     private function checkRequirements(array $requirements, array $server): bool
     {
+        if (($requirements['incompatible'] ?? false) === true) {
+            return false;
+        }
+        if (isset($requirements['base_version']) && !$this->supportsMinimumVersion($requirements['base_version'])) {
+            return false;
+        }
         foreach ($requirements as $field => $filterRule) {
             if (in_array($field, ['base_version', 'incompatible'])) {
                 continue;
@@ -165,7 +171,7 @@ abstract class AbstractProtocol
                         return false;
                     }
                     $requiredVersion = $allowedValues[$actualValue];
-                    if ($requiredVersion !== '0.0.0' && version_compare($this->clientVersion, $requiredVersion, '<')) {
+                    if (!$this->supportsMinimumVersion($requiredVersion)) {
                         return false;
                     }
                     continue;
@@ -185,12 +191,23 @@ abstract class AbstractProtocol
                 continue;
             }
             $requiredVersion = $allowedValues[$actualValue];
-            if ($requiredVersion !== '0.0.0' && version_compare($this->clientVersion, $requiredVersion, '<')) {
+            if (!$this->supportsMinimumVersion($requiredVersion)) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private function supportsMinimumVersion(string $requiredVersion): bool
+    {
+        // The sentinel denotes an unsupported feature, independent of whether
+        // the requester sent a version. An absent version otherwise means the
+        // current supported client, not version 0 (e.g. copied Stash URLs).
+        if ($requiredVersion === '9999.0.0') {
+            return false;
+        }
+        return blank($this->clientVersion) || version_compare($this->clientVersion, $requiredVersion, '>=');
     }
 
     /**

@@ -149,11 +149,15 @@ def check_panel(api, admin_path):
         require(actual == expected, "Panel asset bytes do not match the page's integrity metadata")
 
 
-def check_subscription(api, member):
-    config = api.json("GET", "/s/" + member["token"], query={"flag": "sing-box"})
-    outbounds = config.get("outbounds", [])
-    require(any(node.get("type") == "vless" and node.get("uuid") == member["uuid"] for node in outbounds), "Subscription has no VLESS member credentials")
-    require(any(node.get("type") == "hysteria2" and node.get("password") == member["uuid"] for node in outbounds), "Subscription has no Hysteria2 member credentials")
+def check_subscription(api, member, parse_yaml):
+    for client, credential in [("mihomo", "password"), ("stash", "auth")]:
+        raw, headers = api.raw("GET", "/s/" + member["token"], query={"flag": client})
+        require("yaml" in headers.get("Content-Type", ""), client + " subscription did not return YAML")
+        config = parse_yaml(raw)
+        proxies = config.get("proxies", [])
+        require(any(node.get("type") == "vless" and node.get("uuid") == member["uuid"] for node in proxies), "Subscription has no VLESS member credentials")
+        require(any(node.get("type") == "hysteria2" and node.get(credential) == member["uuid"] for node in proxies), "Subscription has no Hysteria2 member credentials")
+    api.raw("GET", "/s/" + member["token"], query={"flag": "sing-box"}, expected=422)
 
 
 def check_backup(api):
@@ -303,15 +307,20 @@ def main():
         report["checks"].append(entry)
         print(json.dumps(entry), flush=True)
 
-    def docker(arguments, label, check=True, timeout=60):
+    def docker(arguments, label, check=True, timeout=60, input_text=None):
         try:
-            result = subprocess.run([args.docker, *arguments], capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run([args.docker, *arguments], capture_output=True, text=True, timeout=timeout, input=input_text)
         except subprocess.TimeoutExpired:
             raise CheckFailed(label + " timed out") from None
         if check and result.returncode:
             (artifacts / "last-command-error.log").write_text(redactor.clean(result.stderr))
             raise CheckFailed(label + " failed; see redacted last-command-error.log")
         return result
+
+    def parse_yaml(raw):
+        code = "require '/www/vendor/autoload.php'; echo json_encode(\\Symfony\\Component\\Yaml\\Yaml::parse(stream_get_contents(STDIN)), JSON_THROW_ON_ERROR);"
+        parsed = docker(["exec", "-i", container, "php", "-r", code], "Parse supported subscription YAML", input_text=raw.decode())
+        return json.loads(parsed.stdout)
 
     def wait_ready(probe, label):
         deadline = time.monotonic() + args.timeout
@@ -391,7 +400,7 @@ def main():
         passed("Administrator HTML and built JavaScript/CSS load with matching integrity hashes")
         member = api.admin("user/create", {"name": "Container restart member", "transfer_enable": None})["data"]
         require(member.get("eligible") is True and member.get("access_mode") == "all", "Created member has incorrect default authorization")
-        check_subscription(api, member)
+        check_subscription(api, member, parse_yaml)
         passed("New member receives VLESS and Hysteria2 subscription credentials")
         check_backup(api)
         passed("HTTP backup creation and download succeed as www with gzip and native SQLite headers")
@@ -454,7 +463,7 @@ def main():
         require(restored["token"] == member["token"] and restored["uuid"] == member["uuid"], "Restoring a member changed its credentials")
         for connection in sockets:
             connection.wait("sync.user.delta", lambda message: message.get("data", {}).get("action") == "add" and contains_member(message, member))
-        check_subscription(api, member)
+        check_subscription(api, member, parse_yaml)
         passed("Member restoration after restart reaches both nodes and restores the same subscription")
         api.json("POST", "/api/v2/server/report", data={
             "token": fixture["server_token"], "node_id": rated_id, "traffic": {str(member["id"]): [1, 1]},

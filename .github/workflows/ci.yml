@@ -141,14 +141,23 @@ jobs:
           curl --fail --location --retry 3 -o "$RUNNER_TEMP/sing-box.tar.gz" https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-linux-amd64.tar.gz
           echo "699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968  $RUNNER_TEMP/sing-box.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/sing-box.tar.gz" -C "$RUNNER_TEMP"
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/mihomo.gz" https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-linux-amd64-compatible-v1.19.29.gz
+          echo "5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094  $RUNNER_TEMP/mihomo.gz" | sha256sum --check
+          gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$RUNNER_TEMP/mihomo"
+          chmod +x "$RUNNER_TEMP/mihomo"
       - name: Connect through real VLESS REALITY and Hysteria2 subscriptions
         timeout-minutes: 5
-        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/protocol-e2e -- python tests/Integration/protocol_connections.py --sing-box "$RUNNER_TEMP/sing-box-1.14.4-linux-amd64/sing-box"
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/protocol-e2e -- python tests/Integration/protocol_connections.py --sing-box "$RUNNER_TEMP/sing-box-1.14.4-linux-amd64/sing-box" --mihomo "$RUNNER_TEMP/mihomo"
+      - name: Exercise subscription rules and both authenticated proxy-chain hops
+        timeout-minutes: 5
+        run: python tests/Support/run-stack.py --without-scheduler --artifacts storage/framework/testing/chain-e2e -- python tests/Integration/subscription_chains.py --mihomo "$RUNNER_TEMP/mihomo"
       - name: Save protocol evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: protocol-evidence
-          path: storage/framework/testing/protocol-e2e/
+          path: |
+            storage/framework/testing/protocol-e2e/
+            storage/framework/testing/chain-e2e/
           if-no-files-found: ignore
           retention-days: 7

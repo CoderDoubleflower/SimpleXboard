@@ -81,9 +81,10 @@ export function errorMessage(error) {
   return error?.message || '操作未完成，请稍后重试。';
 }
 
-export function subscriptionUrl(raw, flag = '') {
+export function subscriptionUrl(raw, flag = 'mihomo') {
+  if (!['mihomo', 'stash'].includes(flag)) throw new Error('订阅仅支持 mihomo 与 Stash。');
   const url = new URL(raw, globalThis.location?.origin ?? 'https://localhost');
   if (!['https:', 'http:'].includes(url.protocol)) throw new Error('订阅地址格式无效。');
-  if (flag) url.searchParams.set('flag', flag);
+  url.searchParams.set('flag', flag);
   return url.href;
 }

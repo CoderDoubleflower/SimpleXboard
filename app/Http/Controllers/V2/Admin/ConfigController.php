@@ -4,12 +4,12 @@ namespace App\Http\Controllers\V2\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ConfigSave;
-use App\Models\SubscribeTemplate;
+use App\Services\SubscriptionTemplateService;
 use Illuminate\Support\Facades\DB;
 
 class ConfigController extends Controller
 {
-    private const TEMPLATES = ['singbox', 'clash', 'clashmeta', 'stash', 'surge', 'surfboard'];
+    private const TEMPLATES = ['mihomo', 'stash'];
 
     public function fetch()
     {
@@ -41,7 +41,7 @@ class ConfigController extends Controller
             'subscribe_template' => [],
         ];
         foreach (self::TEMPLATES as $type) {
-            $content = subscribe_template($type) ?? '';
+            $content = app(SubscriptionTemplateService::class)->getProfile($type)['base_yaml'];
             $data['subscribe_template']['subscribe_template_' . $type] = is_string($content)
                 ? $content : json_encode($content, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         }
@@ -50,15 +50,24 @@ class ConfigController extends Controller
 
     public function save(ConfigSave $request)
     {
-        DB::transaction(function () use ($request) {
+        $templates = app(SubscriptionTemplateService::class);
+        // Keep legacy admin API callers on the same validated composition path.
+        $profiles = [];
+        foreach ($request->validated() as $key => $value) {
+            if (!str_starts_with($key, 'subscribe_template_')) continue;
+            $client = $key === 'subscribe_template_stash' ? 'stash' : 'mihomo';
+            if (isset($profiles[$client])) \App\Services\SubscriptionTemplateValidator::fail($key, '请只提交一种 mihomo 模板字段。');
+            $profile = $templates->getProfile($client);
+            $profile['base_yaml'] = $value ?? file_get_contents(resource_path('rules/default.clash.yaml'));
+            $templates->preview($client, $profile);
+            $profiles[$client] = $profile;
+        }
+        DB::transaction(function () use ($request, $templates, $profiles) {
             $settings = [];
             foreach ($request->validated() as $key => $value) {
-                if (str_starts_with($key, 'subscribe_template_')) {
-                    SubscribeTemplate::setContent(substr($key, strlen('subscribe_template_')), $value);
-                } else {
-                    $settings[$key] = $value;
-                }
+                if (!str_starts_with($key, 'subscribe_template_')) $settings[$key] = $value;
             }
+            foreach ($profiles as $client => $profile) $templates->save($client, $profile);
             if ($settings) {
                 admin_setting($settings);
             }

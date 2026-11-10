@@ -4,13 +4,12 @@ namespace App\Protocols;
 
 use App\Models\Server;
 use App\Utils\Helper;
-use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 use App\Support\AbstractProtocol;
 
 class ClashMeta extends AbstractProtocol
 {
-    public $flags = ['meta', 'verge', 'flclash', 'nekobox', 'clashmetaforandroid'];
+    public $flags = ['mihomo', 'meta', 'clash.meta', 'clashmeta', 'clash', 'verge', 'flclash', 'clashmetaforandroid'];
     const CUSTOM_TEMPLATE_FILE = 'resources/rules/custom.clashmeta.yaml';
     const CUSTOM_CLASH_TEMPLATE_FILE = 'resources/rules/custom.clash.yaml';
     const DEFAULT_TEMPLATE_FILE = 'resources/rules/default.clash.yaml';
@@ -147,111 +146,49 @@ class ClashMeta extends AbstractProtocol
         $user = $this->user;
         $appName = admin_setting('app_name', 'XBoard');
 
-        $template = subscribe_template('clashmeta');
-
-        $config = Yaml::parse($template);
         $proxy = [];
-        $proxies = [];
 
         foreach ($servers as $item) {
             if ($item['type'] === Server::TYPE_SHADOWSOCKS) {
                 array_push($proxy, self::buildShadowsocks($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_VMESS) {
                 array_push($proxy, self::buildVmess($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_TROJAN) {
                 array_push($proxy, self::buildTrojan($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_VLESS) {
                 array_push($proxy, self::buildVless($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_HYSTERIA) {
                 array_push($proxy, self::buildHysteria($item['password'], $item, $user));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_TUIC) {
                 array_push($proxy, self::buildTuic($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_ANYTLS) {
                 array_push($proxy, self::buildAnyTLS($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_SOCKS) {
                 array_push($proxy, self::buildSocks5($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_HTTP) {
                 array_push($proxy, self::buildHttp($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_MIERU) {
                 array_push($proxy, self::buildMieru($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
         }
 
-        $config['proxies'] = array_merge($config['proxies'] ? $config['proxies'] : [], $proxy);
-        foreach ($config['proxy-groups'] as $k => $v) {
-            if (!is_array($config['proxy-groups'][$k]['proxies']))
-                $config['proxy-groups'][$k]['proxies'] = [];
-            $isFilter = false;
-            foreach ($config['proxy-groups'][$k]['proxies'] as $src) {
-                foreach ($proxies as $dst) {
-                    if (!$this->isRegex($src))
-                        continue;
-                    $isFilter = true;
-                    $config['proxy-groups'][$k]['proxies'] = array_values(array_diff($config['proxy-groups'][$k]['proxies'], [$src]));
-                    if ($this->isMatch($src, $dst)) {
-                        array_push($config['proxy-groups'][$k]['proxies'], $dst);
-                    }
-                }
-                if ($isFilter)
-                    continue;
-            }
-            if ($isFilter)
-                continue;
-            $config['proxy-groups'][$k]['proxies'] = array_merge($config['proxy-groups'][$k]['proxies'], $proxies);
-        }
-        $config['proxy-groups'] = array_filter($config['proxy-groups'], function ($group) {
-            return $group['proxies'];
-        });
-        $config['proxy-groups'] = array_values($config['proxy-groups']);
-        $config = $this->buildRules($config);
+        $config = app(\App\Services\SubscriptionTemplateService::class)->build('mihomo', $proxy, $this->servers);
 
         $yaml = Yaml::dump($config, 2, 4, Yaml::DUMP_EMPTY_ARRAY_AS_SEQUENCE);
-        $yaml = str_replace('$app_name', admin_setting('app_name', 'XBoard'), $yaml);
         return response($yaml)
             ->header('content-type', 'text/yaml')
             ->header('subscription-userinfo', $this->subscriptionUserInfo())
             ->header('profile-update-interval', '24')
             ->header('content-disposition', 'attachment;filename*=UTF-8\'\'' . rawurlencode($appName));
-    }
-
-    /**
-     * Build the rules for Clash.
-     */
-    public function buildRules($config)
-    {
-        // Force the current subscription domain to be a direct rule
-        $subsDomain = request()->header('Host');
-        if ($subsDomain) {
-            array_unshift($config['rules'], "DOMAIN,{$subsDomain},DIRECT");
-        }
-        // // Force the nodes ip to be a direct rule
-        // collect($this->servers)->pluck('host')->map(function ($host) {
-        //     $host = trim($host);
-        //     return filter_var($host, FILTER_VALIDATE_IP) ? [$host] : Helper::getIpByDomainName($host);
-        // })->flatten()->unique()->each(function ($nodeIP) use (&$config) {
-        //     array_unshift($config['rules'], "IP-CIDR,{$nodeIP}/32,DIRECT,no-resolve");
-        // });
-
-        return $config;
     }
 
     public static function buildShadowsocks($password, $server)
@@ -747,27 +684,6 @@ class ClashMeta extends AbstractProtocol
         }
 
         return $array;
-    }
-
-    private function isMatch($exp, $str)
-    {
-        try {
-            return preg_match($exp, $str) === 1;
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    private function isRegex($exp)
-    {
-        if (empty($exp)) {
-            return false;
-        }
-        try {
-            return preg_match($exp, '') !== false;
-        } catch (\Exception $e) {
-            return false;
-        }
     }
 
     protected static function appendMultiplex(&$array, $protocol_settings)

@@ -108,9 +108,9 @@ def main():
             return payload.get('data', payload)
 
         def subscription(url, expected=200):
-            response = context.request.get(url + ('&' if '?' in url else '?') + 'flag=sing-box')
+            response = context.request.get(url + ('&' if '?' in url else '?') + 'flag=mihomo')
             assert response.status == expected, f'Subscription expected {expected}, received {response.status}'
-            return response.json() if expected == 200 else None
+            return response.text() if expected == 200 else None
 
         def table_row(name):
             return page.locator('tbody tr').filter(has=page.get_by_text(name, exact=True))
@@ -378,10 +378,10 @@ def main():
             assert created['transfer_enable'] is None and created['expired_at'] is None and created['access_mode'] == 'all'
             form = dialog('成员订阅')
             subscribe_url = form.get_by_label('订阅地址', exact=True).input_value()
-            assert subscribe_url == created['subscribe_url']
-            form.get_by_label('客户端格式', exact=True).select_option('sing-box')
+            assert subscribe_url == created['subscribe_url'] + ('&' if '?' in created['subscribe_url'] else '?') + 'flag=mihomo'
+            form.get_by_label('客户端格式', exact=True).select_option('mihomo')
             form.get_by_role('button', name='复制订阅链接', exact=True).click()
-            assert 'flag=sing-box' in page.evaluate('navigator.clipboard.readText()')
+            assert 'flag=mihomo' in page.evaluate('navigator.clipboard.readText()')
             close_dialog()
             expect(table_row(member_name)).to_contain_text('实际 0 B')
             expect(table_row(member_name)).to_contain_text('额度已用 0 B · 不限额度')
@@ -424,7 +424,7 @@ def main():
             page.get_by_role('button', name='查看 ' + member_name + ' 的订阅', exact=True).click()
             dialog('成员订阅').get_by_role('button', name='轮换凭据', exact=True).click()
             rotated = action('user/resetSecret', lambda: dialog('轮换成员凭据').get_by_role('button', name='确认轮换', exact=True).click())
-            expect(dialog('成员订阅').get_by_label('订阅地址', exact=True)).to_have_value(rotated['subscribe_url'])
+            expect(dialog('成员订阅').get_by_label('订阅地址', exact=True)).to_have_value(rotated['subscribe_url'] + ('&' if '?' in rotated['subscribe_url'] else '?') + 'flag=mihomo')
             assert rotated['token'] != created['token'] and rotated['uuid'] != created['uuid']
             close_dialog()
             subscription(subscribe_url, 403)
@@ -466,8 +466,9 @@ def main():
             page.locator('[name="app_name"]').fill(original_name)
             action('config/save', lambda: page.get_by_role('button', name='保存设置', exact=True).click())
             page.get_by_role('tab', name='订阅模板', exact=True).click()
-            expect(page.get_by_label('订阅模板内容', exact=True)).to_be_visible()
-            action('config/save', lambda: page.get_by_role('button', name='保存当前模板', exact=True).click())
+            expect(page.get_by_label('分流预设', exact=True)).to_be_visible()
+            expect(page.get_by_label('客户端格式', exact=True)).to_have_value('mihomo')
+            action('subscription-template/save', lambda: page.get_by_role('button', name='保存当前模板', exact=True).click())
             page.get_by_role('tab', name='管理员安全', exact=True).click()
             expect(page.get_by_text('当前会话', exact=True)).to_be_visible()
             new_path = 'private-panel-e2e'
@@ -519,7 +520,7 @@ def main():
                     screenshot('07-mobile-' + {'概览': 'overview', '成员与订阅': 'members', 'VPS 与节点': 'nodes'}[label])
             nav('成员与订阅')
             page.get_by_role('button', name='查看 ' + member_name + ' 的订阅', exact=True).click()
-            expect(dialog('成员订阅').get_by_label('订阅地址', exact=True)).to_have_value(rotated['subscribe_url'])
+            expect(dialog('成员订阅').get_by_label('订阅地址', exact=True)).to_have_value(rotated['subscribe_url'] + ('&' if '?' in rotated['subscribe_url'] else '?') + 'flag=mihomo')
             close_dialog()
             page.get_by_role('button', name='添加成员', exact=True).click()
             form = dialog('添加成员')

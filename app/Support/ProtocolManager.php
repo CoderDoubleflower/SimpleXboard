@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use Illuminate\Contracts\Container\Container;
+use App\Protocols\ClashMeta;
+use App\Protocols\Stash;
 
 class ProtocolManager
 {
@@ -33,19 +35,20 @@ class ProtocolManager
      */
     public function registerAllProtocols()
     {
-        if (empty($this->protocolClasses)) {
-            $files = glob(app_path('Protocols') . '/*.php');
-
-            foreach ($files as $file) {
-                $className = 'App\\Protocols\\' . basename($file, '.php');
-
-                if (class_exists($className) && is_subclass_of($className, AbstractProtocol::class)) {
-                    $this->protocolClasses[] = $className;
-                }
-            }
-        }
-
+        // Subscription formats are an explicit public contract. Leaving an old
+        // exporter on disk must not make it reachable through User-Agent sniffing.
+        $this->protocolClasses = [ClashMeta::class, Stash::class];
         return $this;
+    }
+
+    /** Legacy Clash names select the mihomo exporter, never a third format. */
+    public function normalizeFlag(string $flag): ?string
+    {
+        return match (strtolower(trim($flag))) {
+            'mihomo', 'meta', 'clash.meta', 'clashmeta', 'clash' => 'mihomo',
+            'stash' => 'stash',
+            default => null,
+        };
     }
 
     /**
@@ -99,27 +102,18 @@ class ProtocolManager
      */
     public function matchProtocolClassName(string $flag): ?string
     {
-        // 按照相反顺序，使最新定义的协议有更高优先级
-        foreach (array_reverse($this->getProtocolClasses()) as $protocolClassString) {
-            try {
-                $reflection = new \ReflectionClass($protocolClassString);
-
-                if (!$reflection->isInstantiable() || !$reflection->isSubclassOf(AbstractProtocol::class)) {
-                    continue;
-                }
-
-                // 'flags' is a public property in AbstractProtocol
-                $instanceForFlags = $reflection->newInstanceWithoutConstructor();
-                $flags = $instanceForFlags->flags;
-
-                if (collect($flags)->contains(fn($f) => stripos($flag, (string) $f) !== false)) {
-                    return $protocolClassString; // 返回类名字符串
-                }
-            } catch (\ReflectionException $e) {
-                report($e); // Consider logging this error
-                continue;
-            }
+        $format = $this->normalizeFlag($flag);
+        if ($format !== null) {
+            return $format === 'stash' ? Stash::class : ClashMeta::class;
         }
+
+        if (preg_match('/(?:^|[^a-z0-9])stash(?:[^a-z0-9]|$)/i', $flag)) {
+            return Stash::class;
+        }
+        if (preg_match('/(?:^|[^a-z0-9])(?:mihomo|clash[ ._-]?meta|clashmetaforandroid|clash[ ._-]?verge|clashx[ ._-]?meta|flclash|verge|clash)(?:[^a-z0-9]|$)/i', $flag)) {
+            return ClashMeta::class;
+        }
+
         return null;
     }
 

@@ -4,7 +4,6 @@ namespace App\Protocols;
 
 use Symfony\Component\Yaml\Yaml;
 use App\Utils\Helper;
-use Illuminate\Support\Facades\File;
 use App\Support\AbstractProtocol;
 use App\Models\Server;
 
@@ -23,20 +22,30 @@ class Stash extends AbstractProtocol
         Server::TYPE_HTTP,
     ];
     protected $protocolRequirements = [
-        // Global rules applied regardless of client version (features Stash never supports)
+        // Only transports implemented by this exporter may be emitted. Unknown
+        // versions still enforce these format restrictions.
         '*' => [
             'trojan' => [
-                'protocol_settings.tls' => [
-                    '2' => '9999.0.0',  // Trojan Reality not supported in Stash
+                'protocol_settings.network' => [
+                    'httpupgrade' => '9999.0.0', 'xhttp' => '9999.0.0', 'h2' => '9999.0.0',
+                ],
+            ],
+            'vless' => [
+                'protocol_settings.network' => [
+                    'httpupgrade' => '9999.0.0', 'xhttp' => '9999.0.0',
                 ],
             ],
             'vmess' => [
                 'protocol_settings.network' => [
-                    'httpupgrade' => '9999.0.0',  // httpupgrade not supported in Stash
+                    'httpupgrade' => '9999.0.0', 'xhttp' => '9999.0.0',
                 ],
             ],
         ],
         'stash' => [
+            'trojan' => [
+                // https://stash.wiki/proxy-protocols/proxy-types#trojan
+                'protocol_settings.tls' => ['2' => '3.6.0'],
+            ],
             'anytls' => [
                 'base_version' => '3.3.0' // AnyTLS 协议在3.3.0版本中添加
             ],
@@ -92,85 +101,41 @@ class Stash extends AbstractProtocol
         $user = $this->user;
         $appName = admin_setting('app_name', 'XBoard');
 
-        $template = subscribe_template('stash');
-
-        $config = Yaml::parse($template);
         $proxy = [];
-        $proxies = [];
 
         foreach ($servers as $item) {
             if ($item['type'] === Server::TYPE_SHADOWSOCKS) {
                 array_push($proxy, self::buildShadowsocks($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_VMESS) {
                 array_push($proxy, self::buildVmess($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_VLESS) {
                 array_push($proxy, $this->buildVless($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_HYSTERIA) {
                 array_push($proxy, self::buildHysteria($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_TROJAN) {
                 array_push($proxy, self::buildTrojan($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_TUIC) {
                 array_push($proxy, self::buildTuic($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_ANYTLS) {
                 array_push($proxy, self::buildAnyTLS($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_SOCKS) {
                 array_push($proxy, self::buildSocks5($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
             if ($item['type'] === Server::TYPE_HTTP) {
                 array_push($proxy, self::buildHttp($item['password'], $item));
-                array_push($proxies, $item['name']);
             }
         }
 
-        $config['proxies'] = array_merge($config['proxies'] ? $config['proxies'] : [], $proxy);
-        foreach ($config['proxy-groups'] as $k => $v) {
-            if (!is_array($config['proxy-groups'][$k]['proxies']))
-                $config['proxy-groups'][$k]['proxies'] = [];
-            $isFilter = false;
-            foreach ($config['proxy-groups'][$k]['proxies'] as $src) {
-                foreach ($proxies as $dst) {
-                    if (!$this->isRegex($src))
-                        continue;
-                    $isFilter = true;
-                    $config['proxy-groups'][$k]['proxies'] = array_values(array_diff($config['proxy-groups'][$k]['proxies'], [$src]));
-                    if ($this->isMatch($src, $dst)) {
-                        array_push($config['proxy-groups'][$k]['proxies'], $dst);
-                    }
-                }
-                if ($isFilter)
-                    continue;
-            }
-            if ($isFilter)
-                continue;
-            $config['proxy-groups'][$k]['proxies'] = array_merge($config['proxy-groups'][$k]['proxies'], $proxies);
-        }
-        $config['proxy-groups'] = array_filter($config['proxy-groups'], function ($group) {
-            return $group['proxies'];
-        });
-        $config['proxy-groups'] = array_values($config['proxy-groups']);
-        // Force the current subscription domain to be a direct rule
-        $subsDomain = request()->header('Host');
-        if ($subsDomain) {
-            array_unshift($config['rules'], "DOMAIN,{$subsDomain},DIRECT");
-        }
+        $config = app(\App\Services\SubscriptionTemplateService::class)->build('stash', $proxy, $this->servers);
 
         $yaml = Yaml::dump($config, 2, 4, Yaml::DUMP_EMPTY_ARRAY_AS_SEQUENCE);
-        $yaml = str_replace('$app_name', admin_setting('app_name', 'XBoard'), $yaml);
         return response($yaml)
             ->header('content-type', 'text/yaml')
             ->header('subscription-userinfo', $this->subscriptionUserInfo())
@@ -315,6 +280,7 @@ class Stash extends AbstractProtocol
                 $array['skip-cert-verify'] = data_get($protocol_settings, 'tls_settings.allow_insecure');
                 if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
                     $array['servername'] = $serverName;
+                    $array['sni'] = $serverName;
                 }
                 break;
             case 2:
@@ -435,14 +401,21 @@ class Stash extends AbstractProtocol
         $array['name'] = $server['name'];
         $array['server'] = $server['host'];
         $array['port'] = $server['port'];
-        $array['up-speed'] = data_get($protocol_settings, 'bandwidth.up');
-        $array['down-speed'] = data_get($protocol_settings, 'bandwidth.down');
-        $array['skip-cert-verify'] = data_get($protocol_settings, 'tls.allow_insecure');
+        foreach (['up', 'down'] as $direction) {
+            $bandwidth = data_get($protocol_settings, 'bandwidth.' . $direction);
+            if (is_numeric($bandwidth) && $bandwidth > 0) {
+                $array[$direction . '-speed'] = 0 + $bandwidth;
+            }
+        }
+        $array['skip-cert-verify'] = (bool) data_get($protocol_settings, 'tls.allow_insecure', false);
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $array['sni'] = $serverName;
         }
         if (isset($server['ports'])) {
             $array['ports'] = $server['ports'];
+        }
+        if ($hopInterval = data_get($protocol_settings, 'hop_interval')) {
+            $array['hop-interval'] = (int) $hopInterval;
         }
         switch (data_get($protocol_settings, 'version')) {
             case 1:
@@ -476,16 +449,16 @@ class Stash extends AbstractProtocol
             'port' => $server['port'],
             'congestion-controller' => data_get($protocol_settings, 'congestion_control', 'cubic'),
             'udp-relay-mode' => data_get($protocol_settings, 'udp_relay_mode', 'native'),
-            'alpn' => data_get($protocol_settings, 'alpn', ['h3']),
+            'alpn' => data_get($protocol_settings, 'alpn') ?: ['h3'],
             'reduce-rtt' => true,
             'fast-open' => true,
             'heartbeat-interval' => 10000,
             'request-timeout' => 8000,
             'max-udp-relay-packet-size' => 1500,
-            'version' => data_get($protocol_settings, 'version', 5),
+            'version' => (int) data_get($protocol_settings, 'version', 5),
         ];
 
-        if (data_get($protocol_settings, 'version') === 4) {
+        if ($array['version'] === 4) {
             $array['token'] = $password;
         } else {
             $array['uuid'] = $password;
@@ -564,24 +537,4 @@ class Stash extends AbstractProtocol
         return $array;
     }
 
-    private function isRegex($exp)
-    {
-        if (empty($exp)) {
-            return false;
-        }
-        try {
-            return preg_match($exp, '') !== false;
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    private function isMatch($exp, $str)
-    {
-        try {
-            return preg_match($exp, $str);
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
 }

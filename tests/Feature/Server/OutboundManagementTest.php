@@ -404,9 +404,9 @@ class OutboundManagementTest extends TestCase
         $visible = ServerService::getAvailableServers($member);
         $this->assertStringNotContainsString(self::UUID, json_encode($visible));
         $this->assertArrayNotHasKey('custom_outbounds', $visible[0]);
-        foreach (['', 'clash.meta', 'sing-box'] as $format) {
+        foreach (['', 'mihomo', 'clash.meta', 'stash'] as $format) {
             $response = $this->get('/s/' . $member->token . ($format ? '?flag=' . $format : ''))->assertOk();
-            $body = $format ? $response->getContent() : base64_decode($response->getContent());
+            $body = $response->getContent();
             $this->assertStringContainsString('entry.example.test', $body);
             $this->assertStringNotContainsString('changed-exit.example.test', $body);
             $this->assertStringNotContainsString(self::UUID, $body);

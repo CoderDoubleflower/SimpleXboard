@@ -18,13 +18,19 @@
 
 管理端源码在 [`panel/`](panel/)，使用原生 JavaScript 模块与 CSS。构建产物由确定性脚本生成至 `public/assets/panel/`，不依赖上游管理端产物子模块。根路径不提供成员门户。
 
-VLESS + REALITY、Hysteria2、现有其他协议及必要客户端格式保留。Redis、Horizon、Octane、WebSocket、机器与节点鉴权继续使用现有架构。
+VLESS + REALITY、Hysteria2 及现有其他节点协议保留。客户端订阅仅支持 **mihomo 与 Stash**。Redis、Horizon、Octane、WebSocket、机器与节点鉴权继续使用现有架构。
 
 创建或编辑 VLESS + REALITY 节点时，点击「一键生成密钥和 Short ID」即可填入配对公钥、私钥及 Short ID；也可单独点击「生成 Short ID」，保留现有密钥对。生成由已登录的管理后台完成，不依赖浏览器的 X25519 / WebCrypto 支持。手动导入仍然可用，生成结果在保存节点后才生效。
 
 Hysteria2 节点在常规表单中配置「服务端 TLS 证书」，支持 VPS 本地文件、PEM 内容、HTTP / DNS 自动签发和自签名。SNI 或客户端「跳过证书验证」不能代替服务端证书；缺少有效来源时阻止保存、启用和下发。详见[证书配置与验收说明](docs/hysteria-server-certificates.md)。
 
-## 出站管理与链式代理
+## 订阅模板与客户端链式代理
+
+在「设置 → 订阅模板」分别修改 mihomo 与 Stash 配置，已原生整合 sublink-worker 的 18 类规则、极简／均衡／完整预设、自定义规则与 `dialer-proxy` 链路。支持额外规则集、按顺序匹配规则、选择入口和落地节点、指定成员预览最终 YAML，以及导入／导出模板。保存后成员更新原订阅地址即可生效，无需部署额外 Worker。
+
+链式节点引用按 ID 保存，成员节点授权仍然生效；入口不可用时会明确报错，避免意外改为直连。已有基础 YAML 和旧模板选择行为会兼容迁移。详见[订阅模板、导入及验收说明](docs/subscription-templates.md)。
+
+## 服务端出站管理
 
 在「VPS 与节点 → 出站」保存现成的外部节点，支持 VLESS（TCP + REALITY / TLS）、Hysteria2、SOCKS5、Shadowsocks、Trojan（TCP + TLS）及 VMess（TCP）。可手动填写，也可粘贴单条节点分享链接，识别后检查参数再保存。
 
@@ -125,6 +131,7 @@ python tests/Support/run-stack.py --without-scheduler -- python panel/tests/outb
 ## 升级、回退与验证记录
 
 - [VPS 一键安装、升级 / 替换与卸载](docs/node-maintenance.md)：在每台 VPS 的「节点维护」中复制一条命令，自动选择架构、校验、备份并执行。
+- [mihomo / Stash 订阅模板与客户端链式代理](docs/subscription-templates.md)
 - [Hysteria 服务端证书配置与验收](docs/hysteria-server-certificates.md)
 - [出站管理、节点升级与验收](docs/outbound-management.md)
 - [每节点流量倍率补丁与自测](docs/node-traffic-multipliers.md)
@@ -139,3 +146,5 @@ python tests/Support/run-stack.py --without-scheduler -- python panel/tests/outb
 ## 许可证与来源
 
 延续上游 [MIT License](LICENSE)。保留原项目的节点协议实现和运维架构，感谢 Xboard 及其贡献者。
+
+订阅模板的规则分类和转换语义移植自 [sublink-worker](https://github.com/954310195/sublink-worker)，版权和 MIT 声明见 [LICENSES/sublink-worker.txt](LICENSES/sublink-worker.txt)。

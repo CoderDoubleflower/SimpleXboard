@@ -387,14 +387,14 @@ def main():
         def log_message(self, *_):
             pass
 
-    origin = ThreadingHTTPServer(("127.0.0.1", 0), OriginHandler)
+    origin = ThreadingHTTPServer(("127.0.0.2", 0), OriginHandler)
     threading.Thread(target=origin.serve_forever, daemon=True).start()
-    target = f"http://127.0.0.1:{origin.server_port}/lifecycle-proof"
+    target = f"http://127.0.0.2:{origin.server_port}/lifecycle-proof"
     # The upstream core intentionally blocks private destinations. Allow only
     # this test origin's exact address AND TCP port through the supported raw
     # custom-route option in this temporary agent config; production defaults
     # remain intact. Bind first so the random destination port cannot be reused.
-    origin_route = {"ip_cidr": ["127.0.0.1/32"], "port": [origin.server_port],
+    origin_route = {"ip_cidr": ["127.0.0.2/32"], "port": [origin.server_port],
                     "network": ["tcp"], "outbound": "direct"}
     result["test_origin_route"] = origin_route
     blocker = None
